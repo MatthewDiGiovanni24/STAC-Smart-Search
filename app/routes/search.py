@@ -1,26 +1,20 @@
-"""Search route — Phase 1 stub.
-
-Accepts the full :class:`STACSearchRequest` contract and returns an empty,
-well-formed :class:`STACSearchResponse`. The real fan-out, normalization, and
-ranking logic is added in Phase 2+.
+"""Search route
+Accepts a federated search request and fans it out to all selected catalog adapters.
 """
 
-from fastapi import APIRouter
+import asyncpg
+
+from fastapi import APIRouter, Depends
 
 from app.schemas.search import STACSearchRequest, STACSearchResponse
+
+from app.services.fanout import fanout_search
+
+from app.database import get_pool
 
 router = APIRouter(tags=["search"])
 
 
 @router.post("/search", response_model=STACSearchResponse)
-async def search(request: STACSearchRequest) -> STACSearchResponse:
-    """Validate a federated search request and return an empty response.
-
-    Phase 1 only validates and echoes the shape; no catalogs are queried yet.
-    """
-    return STACSearchResponse(
-        items=[],
-        total=0,
-        sources={},
-        query_time_ms=0.0,
-    )
+async def search(body: STACSearchRequest, pool: asyncpg.Pool = Depends(get_pool)) -> STACSearchResponse:
+    return await fanout_search(body, pool)

@@ -9,10 +9,12 @@ WORKDIR /app
 
 # Install dependencies first for better layer caching.
 COPY pyproject.toml README.md ./
-RUN pip install --upgrade pip && pip install .
 
 # Copy application source and migrations.
 COPY app ./app
+
+RUN pip install --upgrade pip && pip install .
+
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 COPY docker-entrypoint.sh ./docker-entrypoint.sh

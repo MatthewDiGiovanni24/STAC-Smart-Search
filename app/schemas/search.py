@@ -1,8 +1,6 @@
 """Pydantic v2 schemas for the federated search request/response cycle.
 
-These are the contract types the rest of the system maps into. Phase 2+ will
-populate ``NormalizedSTACItem`` from heterogeneous catalog responses; Phase 1
-only defines the shapes and wires up the stub endpoint.
+These are the contract types the rest of the system maps into.
 """
 
 from typing import Any, Literal
@@ -16,7 +14,7 @@ SourceStatus = Literal["ok", "timeout", "error"]
 class STACSearchRequest(BaseModel):
     """A single federated STAC search request.
 
-    Fanned out to every selected catalog adapter in Phase 2. ``bbox`` and
+    Fanned out to every selected catalog adapter. ``bbox`` and
     ``datetime`` are required; free text and collection/source filters are
     optional.
     """
@@ -59,7 +57,7 @@ class STACSearchRequest(BaseModel):
 class NormalizedSTACItem(BaseModel):
     """A STAC item normalized into the unified federated schema.
 
-    Every catalog adapter maps its native response into this shape (Phase 3).
+    Every catalog adapter maps its native response into this shape.
     ``relevance_score`` is populated by the ranking stage; ``raw_source`` retains
     the original catalog payload for debugging and re-normalization.
     """

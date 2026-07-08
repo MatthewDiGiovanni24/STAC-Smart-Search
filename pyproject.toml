@@ -1,7 +1,7 @@
 [project]
 name = "stac-federated"
 version = "0.1.0"
-description = "Federated STAC catalog discovery service (Phase 1 foundation)."
+description = "Federated STAC catalog discovery service"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.2",
     "alembic>=1.13",
     "sqlalchemy>=2.0",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
