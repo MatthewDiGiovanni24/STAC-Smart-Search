@@ -7,36 +7,7 @@ interface or relevance ranking. `stac-federated` fans a single search out to all
 of them concurrently, normalizes the heterogeneous responses into one schema,
 ranks results by semantic relevance, and streams them back.
 
-This repository is under active development. **This is Phase 1 — the
-foundation.**
-
-## What Phase 1 sets up
-
-Phase 1 is the skeleton the rest of the system is built on. It does **not** yet
-perform real searches. It provides:
-
-- **Project structure & tooling** — FastAPI app, Docker Compose (FastAPI +
-  Postgres with the `pgvector` extension), `pyproject.toml`, Alembic migrations.
-- **Core schemas** (Pydantic v2) — `STACSearchRequest`, `STACSearchResponse`,
-  and the unified `NormalizedSTACItem` that every catalog response will map into.
-- **Adapter interface** — the abstract `STACAdapter` base class every catalog
-  adapter will implement in Phase 2.
-- **Provider registry** — a Postgres `providers` table plus the migration that
-  installs `pgvector` and creates the table.
-- **Provider discovery** — on startup the service fetches the NASA CMR-STAC root,
-  registers every child provider, and seeds the static providers (Planetary
-  Computer, Earth Search). Discovery is idempotent (upsert on `base_url`).
-- **Endpoints**
-  - `GET /health` — liveness probe.
-  - `GET /catalogs` — the registered, active providers.
-  - `POST /search` — accepts a full `STACSearchRequest` and returns an empty
-    (but well-formed) `STACSearchResponse`. Real fan-out lands in Phase 2+.
-
-### Explicitly out of scope for Phase 1
-
-Search fan-out, catalog adapters, response normalization, RemoteCLIP embeddings,
-pgvector similarity queries, SSE streaming, and deployment config all come in
-later phases.
+This repository is under active development.
 
 ## Running locally
 
