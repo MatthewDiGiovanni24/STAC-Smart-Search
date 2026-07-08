@@ -25,7 +25,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/stac
       CMR_STAC_ROOT: https://cmr.earthdata.nasa.gov/stac/
       DISCOVERY_TIMEOUT_SECONDS: "30"
-      LOG_LEVEL: INFO
+      LOG_LEVEL: DEBUG
     ports:
       - "8000:8000"
 

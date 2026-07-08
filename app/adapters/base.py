@@ -1,9 +1,4 @@
-"""Abstract base class for STAC catalog adapters.
-
-Every catalog integration (NASA CMR, Microsoft Planetary Computer, AWS Earth
-Search, ...) implements this interface in Phase 2. Defining it now fixes the
-contract the search fan-out and normalization layers will depend on.
-"""
+"""Abstract base class for STAC catalog adapters."""
 
 from abc import ABC, abstractmethod
 

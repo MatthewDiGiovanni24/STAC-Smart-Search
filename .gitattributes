@@ -1,0 +1,8 @@
+# Always use LF for shell scripts and config files
+*.sh        text eol=lf
+*.env       text eol=lf
+Dockerfile  text eol=lf
+*.ini       text eol=lf
+*.toml      text eol=lf
+*.sql       text eol=lf
+*.py        text eol=lf
