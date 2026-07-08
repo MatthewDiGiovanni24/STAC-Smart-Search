@@ -16,7 +16,7 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
     start = time.perf_counter()
     providers = await list_active_providers(pool)
     adapters = [
-        GenericSTACAdapter(base_url=provider.base_url, source=provider.name)
+        GenericSTACAdapter(base_url=provider["base_url"], source=provider["name"])
         for provider in providers
         ]
     results = await asyncio.gather(*(adapter.search(request) for adapter in adapters), return_exceptions=True)

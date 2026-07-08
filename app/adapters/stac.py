@@ -23,13 +23,12 @@ class GenericSTACAdapter(STACAdapter):
             "datetime": request.datetime,
             "limit": request.limit,
         }
-        if request.text:
-            body["q"] = request.text
         if request.collections:
             body["collections"] = request.collections
 
         url = self.base_url.rstrip("/") + "/search"
 
+        logger.debug(f"Sending to {url}: {body}")
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.post(url, json=body)
