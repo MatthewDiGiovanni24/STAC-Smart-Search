@@ -46,7 +46,7 @@ def create_app() -> FastAPI:
     """Application factory."""
     app = FastAPI(
         title="stac-federated",
-        description="Federated STAC catalog discovery service (Phase 1 foundation).",
+        description="Federated STAC catalog discovery service.",
         version="0.1.0",
         lifespan=lifespan,
     )

@@ -75,4 +75,3 @@ alembic/             # Migrations (pgvector extension + providers table)
 docker-compose.yml   # app + postgres (pgvector)
 Dockerfile
 ```
-![alt text](newplot.png)
