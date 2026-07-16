@@ -62,8 +62,14 @@ class NormalizedSTACItem(BaseModel):
     the original catalog payload for debugging and re-normalization.
     """
 
-    id: str = Field(..., description="Item identifier as reported by the source catalog.")
-    collection: str = Field(..., description="Collection ID the item belongs to.")
+    # id/collection are nullable so the normalizer never raises on malformed
+    # features that omit them (see app/services/normalizer.py).
+    id: str | None = Field(
+        default=None, description="Item identifier as reported by the source catalog."
+    )
+    collection: str | None = Field(
+        default=None, description="Collection ID the item belongs to."
+    )
     catalog_source: str = Field(..., description="Source catalog, e.g. 'cmr' or 'earth_search'.")
     geometry: dict[str, Any] | None = Field(
         default=None, description="GeoJSON geometry of the item footprint."
@@ -75,10 +81,26 @@ class NormalizedSTACItem(BaseModel):
         default=None, description="Item datetime (ISO 8601)."
     )
     properties: dict[str, Any] = Field(
-        default_factory=dict, description="STAC item properties."
+        default_factory=dict, description="STAC item properties (full raw properties block)."
     )
     assets: dict[str, Any] = Field(
         default_factory=dict, description="STAC item assets keyed by asset name."
+    )
+    # Common fields lifted out of `properties` for convenient downstream access.
+    cloud_cover: float | None = Field(
+        default=None, description="Cloud cover percentage (from eo:cloud_cover)."
+    )
+    platform: str | None = Field(
+        default=None, description="Acquisition platform (from platform or sat:platform)."
+    )
+    instruments: list[str] | None = Field(
+        default=None, description="Instruments (from instruments or sat:instrument)."
+    )
+    constellation: str | None = Field(
+        default=None, description="Constellation (from sat:constellation)."
+    )
+    bands: list[dict] | None = Field(
+        default=None, description="Spectral bands (from eo:bands); null when absent."
     )
     relevance_score: float | None = Field(
         default=None, description="Semantic relevance score, populated by ranking."
