@@ -1,0 +1,43 @@
+import json
+import numpy as np
+import plotly.express as px
+from sklearn.decomposition import PCA
+
+def main():
+    print("Loading data...")
+    # Make sure this matches your JSON file name!
+    with open('data/collections_with_embeddings.json', 'r') as f:
+        data = json.load(f)
+
+    # Filter out any that don't have embeddings
+    valid_data = [item for item in data if item.get('embedding')]
+    
+    names = [item.get('name', item.get('id', 'Unknown')) for item in valid_data]
+    vectors = np.array([item['embedding'] for item in valid_data])
+
+    print(f"Reducing {len(vectors)} vectors from 384D to 3D using PCA...")
+    # PCA reduces the dimensions to 3
+    pca = PCA(n_components=3)
+    vectors_3d = pca.fit_transform(vectors)
+
+    print("Generating 3D plot...")
+    # Create an interactive 3D scatter plot
+    fig = px.scatter_3d(
+        x=vectors_3d[:, 0], 
+        y=vectors_3d[:, 1], 
+        z=vectors_3d[:, 2],
+        hover_name=names, # Shows the collection name when you hover over a dot
+        title="STAC Collections Semantic Map (384D reduced to 3D)",
+        labels={'x': 'Component 1', 'y': 'Component 2', 'z': 'Component 3'}
+    )
+    
+    # Make the dots look nice
+    fig.update_traces(marker=dict(size=5, opacity=0.8))
+
+    # Save as an interactive HTML file
+    output_file = "semantic_map_3d.html"
+    fig.write_html(output_file)
+    print(f"Done! Open '{output_file}' in your web browser to view it.")
+
+if __name__ == "__main__":
+    main()
