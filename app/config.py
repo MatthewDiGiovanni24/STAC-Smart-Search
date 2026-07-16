@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     # Root logging level (DEBUG, INFO, WARNING, ...).
     log_level: str = "INFO"
 
+    # --- RemoteCLIP embedding settings ------------------------------------
+    # open_clip architecture and the RemoteCLIP checkpoint fetched from the HF
+    # hub. ViT-B-32 yields 512-dim text embeddings (matches the pgvector column).
+    embedding_model_name: str = "ViT-B-32"
+    remoteclip_repo: str = "chendelong/RemoteCLIP"
+    remoteclip_checkpoint: str = "RemoteCLIP-ViT-B-32.pt"
+    # Torch device: "cpu", "cuda", or "mps". "auto" picks the best available.
+    embedding_device: str = "auto"
+    # Batch size for encoding many collection descriptions at once.
+    embedding_batch_size: int = 64
+
     @property
     def sqlalchemy_url(self) -> str:
         """Return the DATABASE_URL in the ``postgresql+asyncpg://`` form Alembic expects."""
