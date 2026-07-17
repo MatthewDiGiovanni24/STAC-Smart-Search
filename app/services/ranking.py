@@ -125,15 +125,18 @@ async def upsert_item_embeddings(pool: asyncpg.Pool, rows: list[tuple]) -> None:
 # --- ranking ----------------------------------------------------------------
 
 
-async def rank_items(
+async def score_items(
     pool: asyncpg.Pool,
     items: list[NormalizedSTACItem],
     query_vector: Optional[list[float]],
 ) -> list[NormalizedSTACItem]:
-    """Rerank items by cosine similarity to the query, setting relevance_score.
+    """Set ``relevance_score`` on each item via cached cosine similarity — no sort.
 
-    No-ops (returns items unchanged) when there is no query vector or no items.
-    Items with no usable metadata text get ``relevance_score=None`` and sort last.
+    Per-batch scoring mode (Phase 6 streaming): scores an arbitrary subset of
+    items against the query vector as it arrives, without reordering the global
+    set. Cache-backed identically to the full-set rank. No-ops when there is no
+    query vector or no items. Items with no usable metadata text get
+    ``relevance_score=None``.
     """
     if not items or not query_vector:
         return items
@@ -171,17 +174,32 @@ async def rank_items(
             if keys[i]:
                 upserts.append((keys[i][0], keys[i][1], keys[i][2], hashes[i], to_vector_literal(fresh[j])))
         await upsert_item_embeddings(pool, upserts)
-        logger.debug("ranking: %d cache hits, %d embedded", len(items) - len(to_embed), len(to_embed))
+        logger.debug("scoring: %d cache hits, %d embedded", len(items) - len(to_embed), len(to_embed))
 
     # Cosine similarity == dot product (all vectors are L2-normalized).
     query = np.asarray(query_vector, dtype=float)
     for i, item in enumerate(items):
         vec = vectors[i]
         item.relevance_score = float(np.dot(query, np.asarray(vec, dtype=float))) if vec is not None else None
+    return items
 
-    # Highest score first; unscored items last (stable).
+
+def sort_by_relevance(items: list[NormalizedSTACItem]) -> list[NormalizedSTACItem]:
+    """Sort items by relevance_score descending, unscored last (stable, in place)."""
     items.sort(
         key=lambda it: (it.relevance_score is not None, it.relevance_score or 0.0),
         reverse=True,
     )
     return items
+
+
+async def rank_items(
+    pool: asyncpg.Pool,
+    items: list[NormalizedSTACItem],
+    query_vector: Optional[list[float]],
+) -> list[NormalizedSTACItem]:
+    """Rerank the full merged set: score then sort (Phase 5 batch path)."""
+    if not items or not query_vector:
+        return items
+    await score_items(pool, items, query_vector)
+    return sort_by_relevance(items)

@@ -5,11 +5,18 @@ temporal overlap, then RemoteCLIP semantic ranking; see
 :mod:`app.services.registry`). Only the providers that own shortlisted
 collections are queried, each scoped to just those collection ids — so a
 Louisiana flood query hits the handful of relevant catalogs, not all 63.
+
+Two entry points share the same setup (:func:`_prepare_work`):
+  * :func:`fanout_search` — batch JSON: gather all providers, rank the full set.
+  * :func:`stream_search` — SSE: yield each provider's items as it responds
+    (``asyncio.as_completed``), scoring on arrival, then a final ``meta`` event
+    with the authoritative global ranking.
 """
 
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 import asyncpg
@@ -18,12 +25,16 @@ from app.adapters.base import AdapterTimeout
 from app.adapters.stac import GenericSTACAdapter
 from app.config import get_settings
 from app.models.provider import list_active_providers
-from app.schemas.search import STACSearchRequest, STACSearchResponse
+from app.schemas.search import NormalizedSTACItem, STACSearchRequest, STACSearchResponse
 from app.services.embeddings import embed_query
-from app.services.ranking import rank_items
+from app.services.ranking import rank_items, score_items, sort_by_relevance
 from app.services.registry import get_candidate_collections
+from app.services.registry_state import get_registry_status
 
 logger = logging.getLogger(__name__)
+
+# A yielded streaming event: ("item", NormalizedSTACItem) or ("meta", dict).
+StreamEvent = tuple[str, Any]
 
 
 def _parse_interval(datetime_str: str | None) -> tuple[str | None, str | None]:
@@ -38,8 +49,14 @@ def _parse_interval(datetime_str: str | None) -> tuple[str | None, str | None]:
     return parts[0], parts[0]
 
 
-async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACSearchResponse:
-    start = time.perf_counter()
+async def _prepare_work(
+    request: STACSearchRequest, pool: asyncpg.Pool
+) -> tuple[list[tuple[Any, GenericSTACAdapter, STACSearchRequest]], list[float] | None]:
+    """Embed the query, shortlist collections, and build per-provider work.
+
+    Returns ``(work, search_vector)`` where each work item is
+    ``(provider_row, adapter, scoped_request)``.
+    """
     start_time, end_time = _parse_interval(request.datetime)
 
     # Embed the query text with RemoteCLIP (same space as stored collection
@@ -64,7 +81,6 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
     providers = await list_active_providers(pool)
     provider_lookup = {p["id"]: p for p in providers}
 
-    # One adapter per shortlisted provider, each scoped to just its collections.
     work: list[tuple[Any, GenericSTACAdapter, STACSearchRequest]] = []
     for pid, collection_ids in provider_to_collections.items():
         provider = provider_lookup.get(pid)
@@ -74,13 +90,21 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
         scoped_request = request.model_copy(update={"collections": collection_ids})
         work.append((provider, adapter, scoped_request))
 
+    return work, search_vector
+
+
+async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACSearchResponse:
+    """Batch path: query all shortlisted providers, rank the full merged set."""
+    start = time.perf_counter()
+    work, search_vector = await _prepare_work(request, pool)
+
     results = await asyncio.gather(
         *(adapter.search(req) for _, adapter, req in work),
         return_exceptions=True,
     )
 
     sources: dict[str, str] = {}
-    items = []
+    items: list[NormalizedSTACItem] = []
     for (provider, _, _), result in zip(work, results):
         # Key by provider name so the CMR child catalogs are reported
         # individually instead of collapsing into a single "cmr" entry.
@@ -95,8 +119,7 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
             sources[key] = "ok"
             items.extend(result)
 
-    # Rerank the merged set by semantic relevance (Phase 5), then cap to the
-    # requested limit so `limit` means "top-N most relevant" globally.
+    # Rerank the merged set by semantic relevance (Phase 5), then cap to limit.
     if get_settings().ranking_enabled and search_vector is not None:
         items = await rank_items(pool, items, search_vector)
     items = items[: request.limit]
@@ -107,3 +130,64 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
         total=len(items),
         query_time_ms=(time.perf_counter() - start) * 1000,
     )
+
+
+async def _run_provider(
+    provider: Any, adapter: GenericSTACAdapter, req: STACSearchRequest
+) -> tuple[Any, str, list[NormalizedSTACItem]]:
+    """Run one provider search, capturing status. Never raises."""
+    try:
+        return provider, "ok", await adapter.search(req)
+    except AdapterTimeout:
+        logger.warning("Timeout searching %s", provider["name"])
+        return provider, "timeout", []
+    except Exception as exc:  # noqa: BLE001 - a bad provider must not kill the stream
+        logger.error("Error searching %s: %s", provider["name"], exc)
+        return provider, "error", []
+
+
+async def stream_search(
+    request: STACSearchRequest, pool: asyncpg.Pool
+) -> AsyncIterator[StreamEvent]:
+    """Stream provider results as they arrive, then a final ``meta`` event.
+
+    Yields ``("item", NormalizedSTACItem)`` for each item the moment its provider
+    responds (scored on arrival), then exactly one ``("meta", dict)`` carrying the
+    authoritative global ranking, per-provider health, totals, and registry warmth.
+    """
+    start = time.perf_counter()
+    settings = get_settings()
+    work, search_vector = await _prepare_work(request, pool)
+    do_rank = settings.ranking_enabled and search_vector is not None
+
+    sources: dict[str, str] = {}
+    all_items: list[NormalizedSTACItem] = []
+
+    tasks = [asyncio.create_task(_run_provider(p, a, r)) for p, a, r in work]
+    try:
+        for coro in asyncio.as_completed(tasks):
+            provider, status, batch = await coro
+            sources[provider["name"]] = status
+            if batch and do_rank:
+                await score_items(pool, batch, search_vector)  # score this batch on arrival
+            for item in batch:
+                all_items.append(item)
+                yield "item", item
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+    # Authoritative global ranking, computed once all batches are in.
+    ordered = sort_by_relevance(list(all_items)) if do_rank else all_items
+    ranked_ids = [item.id for item in ordered if item.id is not None]
+
+    registry_warm = (await get_registry_status(pool)).ready
+
+    yield "meta", {
+        "ranked_ids": ranked_ids,
+        "sources": sources,
+        "total": len(all_items),
+        "query_time_ms": (time.perf_counter() - start) * 1000,
+        "registry_warm": registry_warm,
+    }

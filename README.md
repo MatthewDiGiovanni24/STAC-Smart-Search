@@ -59,6 +59,20 @@ All configuration is via environment variables (see `.env.example`):
 | `DISCOVERY_TIMEOUT_SECONDS` | `30`                                      | Timeout for discovery HTTP calls.            |
 | `LOG_LEVEL`                 | `INFO`                                    | Root log level.                              |
 
+## Known behavior
+
+- **Planetary Computer requires `collections` on `/search`.** Unlike CMR and
+  Earth Search, PC returns `422 "collection is required"` for a collection-less
+  catalog-wide search. This is resolved architecturally: the collection
+  pre-filter always scopes each provider request to specific collection ids, so
+  PC receives `collections` in normal operation. (A bare, unscoped call to PC
+  will still 422 — that's PC's API policy, not a bug in our request encoding.)
+- **Planetary Computer `/collections` can return `504` during upstream
+  outages.** The collection crawler retries transient timeouts/5xx and degrades
+  gracefully (PC is skipped that run; other catalogs proceed). If PC's
+  collections aren't in the registry, PC simply isn't shortlisted until the next
+  successful crawl.
+
 ## Project layout
 
 ```

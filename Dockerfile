@@ -16,7 +16,7 @@ COPY app ./app
 # Install the CPU-only torch wheel first so `pip install .` doesn't pull the
 # multi-GB CUDA build for the RemoteCLIP embedding stack.
 RUN pip install --upgrade pip \
- && pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.2" \
+ && pip install torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cpu \
  && pip install .
 
 COPY alembic ./alembic
