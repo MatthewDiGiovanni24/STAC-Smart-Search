@@ -20,6 +20,7 @@ from app.config import get_settings
 from app.models.provider import list_active_providers
 from app.schemas.search import STACSearchRequest, STACSearchResponse
 from app.services.embeddings import embed_query
+from app.services.ranking import rank_items
 from app.services.registry import get_candidate_collections
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,12 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
         else:
             sources[key] = "ok"
             items.extend(result)
+
+    # Rerank the merged set by semantic relevance (Phase 5), then cap to the
+    # requested limit so `limit` means "top-N most relevant" globally.
+    if get_settings().ranking_enabled and search_vector is not None:
+        items = await rank_items(pool, items, search_vector)
+    items = items[: request.limit]
 
     return STACSearchResponse(
         sources=sources,

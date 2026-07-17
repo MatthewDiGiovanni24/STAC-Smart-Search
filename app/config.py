@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # Number of shortlisted collections the pre-filter returns per query.
     candidate_limit: int = 10
 
+    # Kill-switch for item-level semantic reranking (Phase 5).
+    ranking_enabled: bool = True
+
     @property
     def sqlalchemy_url(self) -> str:
         """Return the DATABASE_URL in the ``postgresql+asyncpg://`` form Alembic expects."""

@@ -38,6 +38,10 @@ class _FakeAdapter:
         return rest[0]
 
 
+async def _identity_rank(pool, items, query_vector):
+    return items
+
+
 @pytest.fixture(autouse=True)
 def _patch(monkeypatch):
     _FakeAdapter.registry.clear()
@@ -47,6 +51,8 @@ def _patch(monkeypatch):
     monkeypatch.setattr(fanout, "get_candidate_collections", _make_async([]))
     monkeypatch.setattr(fanout, "list_active_providers", _make_async([]))
     monkeypatch.setattr(fanout, "embed_query", lambda text: [0.0] * 512)
+    # These tests cover orchestration, not ranking; keep rank a passthrough.
+    monkeypatch.setattr(fanout, "rank_items", _identity_rank)
 
 
 def _make_async(return_value):
@@ -55,8 +61,10 @@ def _make_async(return_value):
     return _fn
 
 
-def _req(text=None):
-    return STACSearchRequest(bbox=[-93.5, 29.5, -90.5, 31.0], datetime="2023-06-01/2023-09-01", text=text)
+def _req(text=None, limit=20):
+    return STACSearchRequest(
+        bbox=[-93.5, 29.5, -90.5, 31.0], datetime="2023-06-01/2023-09-01", text=text, limit=limit
+    )
 
 
 PROVIDERS = [
@@ -140,6 +148,30 @@ async def test_empty_shortlist_returns_empty_without_fanout(monkeypatch):
     assert resp.total == 0
     assert resp.sources == {}
     assert _FakeAdapter.registry == {}  # no adapters constructed / no catalogs hit
+
+
+@pytest.mark.asyncio
+async def test_ranking_applied_then_truncated_to_limit(monkeypatch):
+    monkeypatch.setattr(fanout, "list_active_providers", _make_async(PROVIDERS))
+    monkeypatch.setattr(fanout, "get_candidate_collections", _make_async([{"provider_id": 1, "id": "X"}]))
+    _FakeAdapter.behavior["https://cmr/stac/LPCLOUD"] = (
+        "items",
+        [_item("a", "cmr"), _item("b", "cmr"), _item("c", "cmr")],
+    )
+
+    called = {}
+
+    async def _rerank(pool, items, query_vector):
+        called["vector"] = query_vector
+        return list(reversed(items))  # deterministic reorder to prove ranking ran
+
+    monkeypatch.setattr(fanout, "rank_items", _rerank)
+
+    resp = await fanout.fanout_search(_req(text="flood", limit=2), pool=object())
+
+    assert called["vector"] is not None                 # ranking received the query vector
+    assert [it.id for it in resp.items] == ["c", "b"]    # reranked order, then truncated to 2
+    assert resp.total == 2
 
 
 @pytest.mark.asyncio
