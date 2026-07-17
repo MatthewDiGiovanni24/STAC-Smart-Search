@@ -31,6 +31,25 @@ def to_vector_literal(vector: Optional[Sequence[float]]) -> Optional[str]:
     return "[" + ",".join(map(str, vector)) + "]"
 
 
+def parse_vector(value: Any) -> Optional[List[float]]:
+    """Parse a pgvector column value into a list of floats.
+
+    We deliberately do NOT register the pgvector asyncpg codec globally: it
+    would force our ``$n::vector`` string-literal writes/queries to pass
+    lists instead, breaking the existing (tested) write and pre-filter paths.
+    Without the codec asyncpg returns ``vector`` columns as ``"[...]"`` strings,
+    which this helper parses on read. Also tolerates list/ndarray/Vector inputs.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        inner = value.strip().strip("[]")
+        return [float(x) for x in inner.split(",")] if inner else []
+    if hasattr(value, "to_list"):  # pgvector Vector object
+        return [float(x) for x in value.to_list()]
+    return [float(x) for x in value]  # list / tuple / ndarray
+
+
 # Shared upsert. ``embedding`` and ``description_hash`` use COALESCE so that
 # passing NULL for an *unchanged* collection preserves the existing embedding
 # instead of wiping it (incremental re-embedding). ``last_crawled_at`` is always
