@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # How long (seconds) provider discovery HTTP calls may take before timing out.
     discovery_timeout_seconds: int = 30
 
+    # Per-catalog search timeout (seconds) used by adapters during fan-out.
+    adapter_timeout_seconds: int = 10
+
     # Root logging level (DEBUG, INFO, WARNING, ...).
     log_level: str = "INFO"
 

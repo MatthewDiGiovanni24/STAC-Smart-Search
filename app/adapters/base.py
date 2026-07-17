@@ -5,6 +5,14 @@ from abc import ABC, abstractmethod
 from app.schemas.search import NormalizedSTACItem, STACSearchRequest
 
 
+class AdapterError(RuntimeError):
+    """A catalog request failed (HTTP error, transport error, or bad response)."""
+
+
+class AdapterTimeout(AdapterError):
+    """A catalog request timed out. Reported distinctly from other errors."""
+
+
 class STACAdapter(ABC):
     """Interface all catalog adapters must implement.
 
