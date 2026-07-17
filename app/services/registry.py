@@ -139,6 +139,12 @@ async def count_collections(pool: asyncpg.Pool) -> Tuple[int, int]:
     return int(total), int(embedded)
 
 
+async def latest_crawl_time(pool: asyncpg.Pool) -> Optional[datetime]:
+    """Return the most recent ``last_crawled_at`` across all collections, or None."""
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT max(last_crawled_at) FROM collections;")
+
+
 async def get_candidate_collections(
     pool: Any,
     bbox: Optional[List[float]] = None,

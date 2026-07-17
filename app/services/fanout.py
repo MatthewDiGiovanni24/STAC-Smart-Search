@@ -3,15 +3,14 @@ import logging
 import time
 import asyncpg
 
-from sentence_transformers import SentenceTransformer
 from app.adapters.stac import GenericSTACAdapter
+from app.config import get_settings
 from app.models.provider import list_active_providers
 from app.schemas.search import STACSearchRequest, STACSearchResponse
+from app.services.embeddings import embed_query
 from app.services.registry import get_candidate_collections
 
 logger = logging.getLogger(__name__)
-
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACSearchResponse:
     start = time.perf_counter()
@@ -26,9 +25,10 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
         else:
             start_time = end_time = parts[0]
 
-    # vector embedding
-    search_text = getattr(request, "text", None) or getattr(request, "q", None)
-    search_vector = embedding_model.encode(search_text).tolist() if search_text else None
+    # Embed the query text with RemoteCLIP (same space as stored collection
+    # embeddings). Offloaded to a thread so torch inference doesn't block the loop.
+    search_text = getattr(request, "text", None)
+    search_vector = await asyncio.to_thread(embed_query, search_text) if search_text else None
 
     # get most relevant collections
     candidates = await get_candidate_collections(
@@ -37,7 +37,7 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
         start_time=start_time,
         end_time=end_time,
         search_embedding=search_vector,
-        limit=10
+        limit=get_settings().candidate_limit,
     )
 
     # group by provider

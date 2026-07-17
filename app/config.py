@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     # Batch size for encoding many collection descriptions at once.
     embedding_batch_size: int = 64
 
+    # --- Collection registry / startup crawl ------------------------------
+    # Whether the startup lifespan kicks off a background registry crawl.
+    registry_refresh_on_startup: bool = True
+    # Skip the startup crawl if the registry was refreshed within this window.
+    registry_ttl_hours: int = 24
+    # Dev cap on how many CMR collections to crawl (None = all ~55k).
+    max_cmr_collections: int | None = None
+    # Number of shortlisted collections the pre-filter returns per query.
+    candidate_limit: int = 10
+
     @property
     def sqlalchemy_url(self) -> str:
         """Return the DATABASE_URL in the ``postgresql+asyncpg://`` form Alembic expects."""

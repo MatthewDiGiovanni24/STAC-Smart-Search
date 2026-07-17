@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.collection import RegistryStatus
+
 # Per-source outcome reported back in a search response.
 SourceStatus = Literal["ok", "timeout", "error"]
 
@@ -123,4 +125,8 @@ class STACSearchResponse(BaseModel):
     )
     query_time_ms: float = Field(
         default=0.0, description="Wall-clock time to service the request, milliseconds."
+    )
+    registry: RegistryStatus | None = Field(
+        default=None,
+        description="Collection-registry warmth. If not ready, empty results mean 'still indexing'.",
     )

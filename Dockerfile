@@ -13,7 +13,11 @@ COPY pyproject.toml README.md ./
 # Copy application source and migrations.
 COPY app ./app
 
-RUN pip install --upgrade pip && pip install .
+# Install the CPU-only torch wheel first so `pip install .` doesn't pull the
+# multi-GB CUDA build for the RemoteCLIP embedding stack.
+RUN pip install --upgrade pip \
+ && pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.2" \
+ && pip install .
 
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
