@@ -29,8 +29,35 @@ class Settings(BaseSettings):
     # How long (seconds) provider discovery HTTP calls may take before timing out.
     discovery_timeout_seconds: int = 30
 
+    # Per-catalog search timeout (seconds) used by adapters during fan-out.
+    adapter_timeout_seconds: int = 10
+
     # Root logging level (DEBUG, INFO, WARNING, ...).
     log_level: str = "INFO"
+
+    # --- RemoteCLIP embedding settings ------------------------------------
+    # open_clip architecture and the RemoteCLIP checkpoint fetched from the HF
+    # hub. ViT-B-32 yields 512-dim text embeddings (matches the pgvector column).
+    embedding_model_name: str = "ViT-B-32"
+    remoteclip_repo: str = "chendelong/RemoteCLIP"
+    remoteclip_checkpoint: str = "RemoteCLIP-ViT-B-32.pt"
+    # Torch device: "cpu", "cuda", or "mps". "auto" picks the best available.
+    embedding_device: str = "auto"
+    # Batch size for encoding many collection descriptions at once.
+    embedding_batch_size: int = 64
+
+    # --- Collection registry / startup crawl ------------------------------
+    # Whether the startup lifespan kicks off a background registry crawl.
+    registry_refresh_on_startup: bool = True
+    # Skip the startup crawl if the registry was refreshed within this window.
+    registry_ttl_hours: int = 24
+    # Dev cap on how many CMR collections to crawl (None = all ~55k).
+    max_cmr_collections: int | None = None
+    # Number of shortlisted collections the pre-filter returns per query.
+    candidate_limit: int = 10
+
+    # Kill-switch for item-level semantic reranking (Phase 5).
+    ranking_enabled: bool = True
 
     @property
     def sqlalchemy_url(self) -> str:

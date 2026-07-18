@@ -1,6 +1,22 @@
 from pydantic import BaseModel
 from typing import List, Optional
 
+
+class RegistryStatus(BaseModel):
+    """Warmth of the collection registry, surfaced to callers.
+
+    Lets clients distinguish "still indexing on first boot" (empty results are
+    expected) from "genuinely no matches" or "broken".
+    """
+
+    ready: bool                      # true once at least one collection is embedded
+    phase: str                       # idle | warming | ready | error
+    collections_indexed: int         # rows in the collections table
+    collections_embedded: int        # rows with an embedding
+    error: Optional[str] = None      # last crawl error, if any
+    last_refresh: Optional[str] = None  # ISO timestamp of last completed refresh
+
+
 class CollectionMetadata(BaseModel):
     id: str
     provider_id: int

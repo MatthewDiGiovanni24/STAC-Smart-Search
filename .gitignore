@@ -7,3 +7,17 @@ venv/
 .ruff_cache/
 *.egg-info/
 .DS_Store
+
+# Generated registry data / crawl dumps (rebuilt by the crawler, never committed)
+data/*.json
+data/*.html
+
+# ML model / checkpoint caches (RemoteCLIP, HuggingFace)
+.cache/
+models/
+*.pt
+*.bin
+*.safetensors
+
+# Plot / visualization outputs
+*.png

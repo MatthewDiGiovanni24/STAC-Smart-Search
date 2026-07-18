@@ -5,7 +5,8 @@ Returns normalized STAC items in the unified schema
 
 import httpx
 import logging
-from app.adapters.base import STACAdapter
+from app.adapters.base import AdapterError, AdapterTimeout, STACAdapter
+from app.config import get_settings
 from app.schemas.search import NormalizedSTACItem, STACSearchRequest
 from app.services.normalizer import normalize_item
 
@@ -30,8 +31,9 @@ class GenericSTACAdapter(STACAdapter):
         url = self.base_url.rstrip("/") + "/search"
 
         logger.debug(f"Sending to {url}: {body}")
+        timeout = get_settings().adapter_timeout_seconds
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, json=body)
             response.raise_for_status()
 
@@ -43,6 +45,10 @@ class GenericSTACAdapter(STACAdapter):
             return [normalize_item(feature, self.source) for feature in features]
 
         except httpx.TimeoutException as e:
-            raise RuntimeError(f"Timeout error while searching {self.source}: {e}") from e
+            raise AdapterTimeout(f"Timeout searching {self.source} ({self.base_url}): {e}") from e
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"HTTP error while searching {self.source}: {e}") from e
+            raise AdapterError(
+                f"HTTP {e.response.status_code} searching {self.source} ({self.base_url})"
+            ) from e
+        except httpx.HTTPError as e:  # connect/read/transport errors
+            raise AdapterError(f"Transport error searching {self.source} ({self.base_url}): {e}") from e
