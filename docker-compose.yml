@@ -26,6 +26,7 @@ services:
       CMR_STAC_ROOT: https://cmr.earthdata.nasa.gov/stac/
       DISCOVERY_TIMEOUT_SECONDS: "30"
       LOG_LEVEL: DEBUG
+      MAX_CMR_COLLECTIONS: "500"
     ports:
       - "8000:8000"
 

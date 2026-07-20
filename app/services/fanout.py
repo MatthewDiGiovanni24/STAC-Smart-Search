@@ -27,7 +27,12 @@ from app.config import get_settings
 from app.models.provider import list_active_providers
 from app.schemas.search import NormalizedSTACItem, STACSearchRequest, STACSearchResponse
 from app.services.embeddings import embed_query
-from app.services.ranking import rank_items, score_items, sort_by_relevance
+from app.services.ranking import (
+    enrich_items_with_collection_context,
+    rank_items,
+    score_items,
+    sort_by_relevance,
+)
 from app.services.registry import get_candidate_collections
 from app.services.registry_state import get_registry_status
 
@@ -119,6 +124,8 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
             sources[key] = "ok"
             items.extend(result)
 
+    items = await enrich_items_with_collection_context(pool, items)
+
     # Rerank the merged set by semantic relevance (Phase 5), then cap to limit.
     if get_settings().ranking_enabled and search_vector is not None:
         items = await rank_items(pool, items, search_vector)
@@ -168,8 +175,10 @@ async def stream_search(
         for coro in asyncio.as_completed(tasks):
             provider, status, batch = await coro
             sources[provider["name"]] = status
-            if batch and do_rank:
-                await score_items(pool, batch, search_vector)  # score this batch on arrival
+            if batch:
+                batch = await enrich_items_with_collection_context(pool, batch)
+                if do_rank:
+                    await score_items(pool, batch, search_vector)  # score this batch on arrival
             for item in batch:
                 all_items.append(item)
                 yield "item", item

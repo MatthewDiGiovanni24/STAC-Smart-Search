@@ -25,6 +25,7 @@ export function ItemCard({ item, registerRef }: Props) {
   const score = item.relevance_score;
   const pct = score != null ? Math.round(Math.max(0, Math.min(1, score)) * 100) : null;
 
+  console.log("My STAC Item:", item);
   return (
     <article
       ref={registerRef}
@@ -36,8 +37,15 @@ export function ItemCard({ item, registerRef }: Props) {
         {pct != null && <span className="card__score-num">{pct}%</span>}
       </div>
 
-      <h3 className="card__collection">{item.collection ?? '(no collection)'}</h3>
-      <p className="card__id" title={item.id}>{item.id}</p>
+      <h3 className="card__collection">
+        {item.collection_title || item.collection || '(no collection)'}
+      </h3>
+      {item.collection_title && item.collection_title !== item.collection && (
+        <p className="card__collection-id">{item.collection}</p>
+      )}
+      <p className="card__id" title={item.id}>
+        {item.properties?.title || item.id}
+      </p>
 
       {pct != null && (
         <div className="score-bar" aria-label={`relevance ${pct}%`}>

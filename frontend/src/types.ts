@@ -10,6 +10,7 @@ export interface Asset {
 export interface Item {
   id: string;
   collection: string | null;
+  collection_title?: string | null;
   catalog_source: string;
   datetime: string | null;
   bbox: number[] | null;
@@ -17,6 +18,10 @@ export interface Item {
   cloud_cover: number | null;
   platform: string | null;
   assets: Record<string, Asset>;
+  properties?: {
+    title?: string;
+    description?: string;
+  };
 }
 
 export interface Meta {

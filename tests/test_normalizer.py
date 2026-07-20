@@ -219,6 +219,22 @@ def test_collection_falls_back_to_properties_then_none():
     assert neither.collection is None
 
 
+def test_collection_title_is_extracted_when_present():
+    """A human-readable collection title is preserved when the feature provides one."""
+    feature = {
+        "id": "a",
+        "collection": "coll-id",
+        "properties": {
+            "datetime": "2024-05-01T10:00:00Z",
+            "collection_title": "Sentinel-2 L2A",
+        },
+    }
+
+    item = normalize_item(feature, "earth_search")
+
+    assert item.collection_title == "Sentinel-2 L2A"
+
+
 def test_malformed_input_does_not_raise():
     """Deeply malformed features must not raise and must still normalize."""
     for bad in ({}, {"geometry": "nope", "bbox": "nope", "properties": None}):

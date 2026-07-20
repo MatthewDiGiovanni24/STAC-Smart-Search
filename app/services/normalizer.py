@@ -41,6 +41,7 @@ def normalize_item(raw_feature: dict, catalog_source: str) -> NormalizedSTACItem
     return NormalizedSTACItem(
         id=_extract_id(feature),
         collection=_extract_collection(feature, properties),
+        collection_title=_extract_collection_title(feature, properties),
         catalog_source=catalog_source,
         geometry=_extract_geometry(feature),
         bbox=_extract_bbox(feature),
@@ -73,6 +74,25 @@ def _extract_collection(feature: dict, properties: dict) -> str | None:
     for candidate in (feature.get("collection"), properties.get("collection")):
         if isinstance(candidate, str) and candidate.strip():
             return candidate
+    return None
+
+
+def _extract_collection_title(feature: dict, properties: dict) -> str | None:
+    """Return a human-readable collection title when one is present."""
+    for candidate in (
+        feature.get("collectionTitle"),
+        feature.get("collection_title"),
+        feature.get("collectionName"),
+        feature.get("collection_name"),
+        properties.get("collectionTitle"),
+        properties.get("collection_title"),
+        properties.get("collectionName"),
+        properties.get("collection_name"),
+        properties.get("collection-title"),
+        properties.get("collection-name"),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
     return None
 
 

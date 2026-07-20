@@ -19,6 +19,7 @@ def _item_payload(item: NormalizedSTACItem) -> dict:
     return {
         "id": item.id,
         "collection": item.collection,
+        "collection_title": item.collection_title,
         "catalog_source": item.catalog_source,
         "datetime": item.datetime,
         "bbox": item.bbox,

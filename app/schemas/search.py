@@ -72,6 +72,10 @@ class NormalizedSTACItem(BaseModel):
     collection: str | None = Field(
         default=None, description="Collection ID the item belongs to."
     )
+    collection_title: str | None = Field(
+        default=None,
+        description="Human-readable collection name when the source item provides one.",
+    )
     catalog_source: str = Field(..., description="Source catalog, e.g. 'cmr' or 'earth_search'.")
     geometry: dict[str, Any] | None = Field(
         default=None, description="GeoJSON geometry of the item footprint."

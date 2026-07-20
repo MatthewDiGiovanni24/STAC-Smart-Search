@@ -121,6 +121,19 @@ async def test_cache_hit_skips_embedding(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_enrich_items_with_collection_context_sets_collection_title(monkeypatch):
+    async def fake_fetch_collection_context(pool, collection_ids):
+        return {"modis-13Q1-061": ("MODIS Vegetation Indices 16-Day (250m)", "desc")}
+
+    monkeypatch.setattr(ranking, "fetch_collection_context", fake_fetch_collection_context)
+
+    item = _item("x", collection="modis-13Q1-061")
+    await ranking.enrich_items_with_collection_context(pool=object(), items=[item])
+
+    assert item.collection_title == "MODIS Vegetation Indices 16-Day (250m)"
+
+
+@pytest.mark.asyncio
 async def test_empty_metadata_text_scores_none_and_sorts_last(patched):
     scored = _item("flood", platform="flood inundation mapping")
     empty = _item("empty")  # no platform/instruments/etc -> empty text

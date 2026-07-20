@@ -84,6 +84,32 @@ async def fetch_collection_context(
     return {r["id"]: (r["title"], r["description"]) for r in rows}
 
 
+async def enrich_items_with_collection_context(
+    pool: asyncpg.Pool, items: list[NormalizedSTACItem]
+) -> list[NormalizedSTACItem]:
+    """Attach collection titles from the registry when the item lacks one."""
+    if not items:
+        return items
+
+    collection_ids = sorted(
+        {
+            it.collection
+            for it in items
+            if it.collection and not (it.collection_title or "").strip()
+        }
+    )
+    if not collection_ids:
+        return items
+
+    context = await fetch_collection_context(pool, collection_ids)
+    for item in items:
+        if not (item.collection_title or "").strip() or item.collection_title is None:
+            title = context.get(item.collection, (None, None))[0] if item.collection else None
+            if isinstance(title, str) and title.strip():
+                item.collection_title = title.strip()
+    return items
+
+
 async def fetch_item_embeddings(
     pool: asyncpg.Pool, keys: list[tuple[str, str, str]]
 ) -> dict[tuple[str, str, str], tuple[Optional[str], object]]:
@@ -140,6 +166,8 @@ async def score_items(
     """
     if not items or not query_vector:
         return items
+
+    await enrich_items_with_collection_context(pool, items)
 
     # Enrich each item's text with its collection's title/description.
     collection_ids = sorted({it.collection for it in items if it.collection})
