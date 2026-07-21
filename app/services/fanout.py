@@ -158,9 +158,9 @@ async def stream_search(
 ) -> AsyncIterator[StreamEvent]:
     """Stream provider results as they arrive, then a final ``meta`` event.
 
-    Yields ``("item", NormalizedSTACItem)`` for each item the moment its provider
-    responds (scored on arrival), then exactly one ``("meta", dict)`` carrying the
-    authoritative global ranking, per-provider health, totals, and registry warmth.
+    Uses a Progressive Fanout: queries catalogs in chunks so we don't spam APIs.
+    Yields ``("item", NormalizedSTACItem)`` the moment a provider responds. 
+    Stops dynamically once a target quota of items is met.
     """
     start = time.perf_counter()
     settings = get_settings()
@@ -169,25 +169,50 @@ async def stream_search(
 
     sources: dict[str, str] = {}
     all_items: list[NormalizedSTACItem] = []
+    
+    # Progressive Fanout Settings
+    TARGET_ITEMS = 40
+    CHUNK_SIZE = 10
 
-    tasks = [asyncio.create_task(_run_provider(p, a, r)) for p, a, r in work]
-    try:
-        for coro in asyncio.as_completed(tasks):
-            provider, status, batch = await coro
-            sources[provider["name"]] = status
-            if batch:
-                batch = await enrich_items_with_collection_context(pool, batch)
-                if do_rank:
-                    await score_items(pool, batch, search_vector)  # score this batch on arrival
-            for item in batch:
-                all_items.append(item)
-                yield "item", item
-    finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
+    # Process the collections in smaller chunks
+    for i in range(0, len(work), CHUNK_SIZE):
+        chunk = work[i : i + CHUNK_SIZE]
+        
+        # Fire off requests only for the current chunk
+        tasks = [asyncio.create_task(_run_provider(p, a, r)) for p, a, r in chunk]
+        
+        try:
+            for coro in asyncio.as_completed(tasks):
+                provider, status, batch = await coro
+                sources[provider["name"]] = status
+                
+                if batch:
+                    batch = await enrich_items_with_collection_context(pool, batch)
+                    if do_rank:
+                        await score_items(pool, batch, search_vector)
+                        
+                for item in batch:
+                    all_items.append(item)
+                    yield "item", item
+                    
+                    # If we hit our target, stop yielding items from this batch
+                    if len(all_items) >= TARGET_ITEMS:
+                        break
+                        
+                # Break out of the task-completion loop if quota is met
+                if len(all_items) >= TARGET_ITEMS:
+                    break
+        finally:
+            # Clean up any pending tasks in this chunk if we broke out early
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+                    
+        # If we hit our target, do not proceed to the next chunk
+        if len(all_items) >= TARGET_ITEMS:
+            break
 
-    # Authoritative global ranking, computed once all batches are in.
+    # Authoritative global ranking, computed once we hit 40 (or exhaust the list)
     ordered = sort_by_relevance(list(all_items)) if do_rank else all_items
     ranked_ids = [item.id for item in ordered if item.id is not None]
 

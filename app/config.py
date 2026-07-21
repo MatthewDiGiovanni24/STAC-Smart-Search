@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # Dev cap on how many CMR collections to crawl (None = all ~55k).
     max_cmr_collections: int | None = None
     # Number of shortlisted collections the pre-filter returns per query.
-    candidate_limit: int = 10
+    candidate_limit: int = 10000
 
     # Kill-switch for item-level semantic reranking (Phase 5).
     ranking_enabled: bool = True

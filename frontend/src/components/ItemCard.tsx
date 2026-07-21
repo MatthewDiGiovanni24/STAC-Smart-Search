@@ -25,7 +25,7 @@ export function ItemCard({ item, registerRef }: Props) {
   const score = item.relevance_score;
   const pct = score != null ? Math.round(Math.max(0, Math.min(1, score)) * 100) : null;
 
-  console.log("My STAC Item:", item);
+  // console.log("My STAC Item:", item);
   return (
     <article
       ref={registerRef}
