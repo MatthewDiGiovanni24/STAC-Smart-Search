@@ -4,7 +4,7 @@ A federated **STAC catalog discovery service** with a modern web frontend. Earth
 
 `STAC Smart Search` solves this using a **Two-Stage Hybrid Search**:
 1. **Semantic & Spatial Pre-filtering**: It uses a local `pgvector` database and the RemoteCLIP AI model to find the most semantically relevant datasets that actually overlap your requested Bounding Box and Date.
-![Vectors](assets/screenshot.png)
+![Vectors Plot](assets/screenshot.png)
 2. **Progressive Fanout**: It streams requests to the underlying APIs in chunks, dynamically falling back to lower-ranked datasets if top matches have no imagery, and streams normalized results back to the frontend in real-time.
 
 This repository is under active development.
