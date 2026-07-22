@@ -7,6 +7,7 @@ A federated **STAC catalog discovery service** with a modern web frontend. Earth
 
 
 Vector Map
+
 <img src="assets/vectors.png" alt="Vectors Plot" width="400">
 
 
