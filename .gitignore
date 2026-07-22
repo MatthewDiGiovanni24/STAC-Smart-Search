@@ -20,4 +20,4 @@ models/
 *.safetensors
 
 # Plot / visualization outputs
-*.png
+# *.png
