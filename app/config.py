@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # Kill-switch for item-level semantic reranking (Phase 5).
     ranking_enabled: bool = True
 
+    # Cosine distance threshold for semantic reranking. Items with a distance
+    # above this threshold are filtered out. Lower = more strict, higher = more permissive. 0.0 = only exact matches, 1.0 = all items pass
+    cosine_distance_threshold: float = 0.25
+
     @property
     def sqlalchemy_url(self) -> str:
         """Return the DATABASE_URL in the ``postgresql+asyncpg://`` form Alembic expects."""

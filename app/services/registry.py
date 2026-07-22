@@ -9,6 +9,7 @@ import asyncpg
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from app.config import get_settings
 from app.schemas.collection import CollectionMetadata
 
 
@@ -205,6 +206,7 @@ async def get_candidate_collections(
 
     # Semantic ranking (cosine distance ascending == most similar first).
     if search_embedding:
+        query += f" AND embedding <=> ${len(args)+1}::vector < {get_settings().cosine_distance_threshold}"
         query += f" ORDER BY embedding <=> ${len(args)+1}::vector ASC"
         args.append(to_vector_literal(search_embedding))
 
