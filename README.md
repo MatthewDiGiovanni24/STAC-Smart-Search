@@ -13,8 +13,6 @@ Vector Map
 
 3. **Progressive Fanout**: It streams requests to the underlying APIs in chunks, dynamically falling back to lower-ranked datasets if top matches have no imagery, and streams normalized results back to the frontend in real-time.
 
-This repository is under active development.
-
 ## Running the Backend (Docker)
 
 ```bash
