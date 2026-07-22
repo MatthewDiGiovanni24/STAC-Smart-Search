@@ -40,9 +40,9 @@ export function ItemCard({ item, registerRef }: Props) {
       <h3 className="card__collection">
         {item.collection_title || item.collection || '(no collection)'}
       </h3>
-      {item.collection_title && item.collection_title !== item.collection && (
+      {/* {item.collection_title && item.collection_title !== item.collection && (
         <p className="card__collection-id">{item.collection}</p>
-      )}
+      )} */}
       <p className="card__id" title={item.id}>
         {item.properties?.title || item.id}
       </p>

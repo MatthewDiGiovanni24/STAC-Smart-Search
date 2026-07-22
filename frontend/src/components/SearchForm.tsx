@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { SearchPayload } from '../types';
+import BBoxMap from './BBoxMap';
 
 interface Props {
   onSearch: (payload: SearchPayload) => void;
@@ -7,14 +8,24 @@ interface Props {
 }
 
 // Sensible defaults so the demo is one click: a Louisiana bbox + 2023 + "flood".
+// const DEFAULTS = {
+//   minLon: '-93.8',
+//   minLat: '28.9',
+//   maxLon: '-88.7',
+//   maxLat: '33.0',
+//   start: '2023-01-01',
+//   end: '2023-12-31',
+//   text: 'flood inundation',
+// };
+
 const DEFAULTS = {
-  minLon: '-93.8',
-  minLat: '28.9',
-  maxLon: '-88.7',
-  maxLat: '33.0',
+  minLon: '',
+  minLat: '',
+  maxLon: '',
+  maxLat: '',
   start: '2023-01-01',
   end: '2023-12-31',
-  text: 'flood inundation',
+  text: '',
 };
 
 export function SearchForm({ onSearch, disabled }: Props) {
@@ -47,6 +58,14 @@ export function SearchForm({ onSearch, disabled }: Props) {
     });
   }
 
+  const handleMapChange = (west: number, south: number, east: number, north: number) => {
+    setMinLon(west.toFixed(4));
+    setMinLat(south.toFixed(4));
+    setMaxLon(east.toFixed(4));
+    setMaxLat(north.toFixed(4));
+  };
+
+
   return (
     <form className="search-form" onSubmit={submit}>
       <label className="field field--wide">
@@ -59,24 +78,38 @@ export function SearchForm({ onSearch, disabled }: Props) {
         />
       </label>
 
-      <fieldset className="bbox">
+      <fieldset className="bbox" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <legend>Bounding box</legend>
-        <label className="field">
-          <span>min lon</span>
-          <input type="number" step="any" value={minLon} onChange={(e) => setMinLon(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>min lat</span>
-          <input type="number" step="any" value={minLat} onChange={(e) => setMinLat(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>max lon</span>
-          <input type="number" step="any" value={maxLon} onChange={(e) => setMaxLon(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>max lat</span>
-          <input type="number" step="any" value={maxLat} onChange={(e) => setMaxLat(e.target.value)} />
-        </label>
+        <div style={{ width: '100%' }}>
+          <BBoxMap 
+            onBBoxChange={handleMapChange} 
+            onClear={() => {
+              setMinLon('');
+              setMinLat('');
+              setMaxLon('');
+              setMaxLat('');
+            }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: '1rem', width: '100%', flexWrap: 'wrap' }}>
+          <label className="field" style={{ flex: 1 }}>
+            <span>Min Longitude</span>
+            <input type="number" step="any" value={minLon} onChange={(e) => setMinLon(e.target.value)} />
+          </label>
+          <label className="field" style={{ flex: 1 }}>
+            <span>Min Latitude</span>
+            <input type="number" step="any" value={minLat} onChange={(e) => setMinLat(e.target.value)} />
+          </label>
+          <label className="field" style={{ flex: 1 }}>
+            <span>Max Longitude</span>
+            <input type="number" step="any" value={maxLon} onChange={(e) => setMaxLon(e.target.value)} />
+          </label>
+          <label className="field" style={{ flex: 1 }}>
+            <span>Max Latitude</span>
+            <input type="number" step="any" value={maxLat} onChange={(e) => setMaxLat(e.target.value)} />
+          </label>
+        </div>
       </fieldset>
 
       <div className="dates">

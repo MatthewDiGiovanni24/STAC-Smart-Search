@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { SearchForm } from './components/SearchForm';
 import { ResultsStream } from './components/ResultsStream';
 import type { SearchPayload } from './types';
+import ThemeToggle from './components/ThemeToggle';
 
 export default function App() {
   // A fresh object per submit re-triggers ResultsStream's effect.
@@ -17,6 +18,7 @@ export default function App() {
 
   return (
     <div className="app">
+    <ThemeToggle />
       <header className="masthead">
         <h1>stac-federated</h1>
         <p className="tagline">

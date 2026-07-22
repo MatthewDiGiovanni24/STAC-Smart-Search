@@ -18,8 +18,20 @@
   --shadow: 0 1px 2px rgba(20, 25, 35, 0.06), 0 4px 16px rgba(20, 25, 35, 0.05);
 }
 
+:root[data-theme="dark"] {
+  --bg: #0f1216;
+  --surface: #171b21;
+  --surface-2: #1e242c;
+  --border: #2a313a;
+  --text: #e7ebf0;
+  --text-dim: #9aa3ad;
+  --accent: #5b8bff;
+  --accent-weak: #1b2740;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0f1216;
     --surface: #171b21;
     --surface-2: #1e242c;
@@ -29,6 +41,32 @@
     --accent: #5b8bff;
     --accent-weak: #1b2740;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+}
+
+:root[data-theme="dark"] .leaflet-layer {
+  filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .leaflet-layer {
+    filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+  }
+}
+
+:root[data-theme="dark"] .leaflet-bar a,
+:root[data-theme="dark"] .leaflet-control-attribution {
+  background-color: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .leaflet-bar a,
+  :root:not([data-theme="light"]) .leaflet-control-attribution {
+    background-color: var(--surface);
+    color: var(--text);
+    border-color: var(--border);
   }
 }
 
@@ -155,8 +193,14 @@ body {
 
 .card__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem; }
 .card__score-num { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
-.card__collection { margin: 0.1rem 0 0.15rem; font-size: 1rem; }
-.card__id { margin: 0 0 0.6rem; font-size: 0.75rem; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card__collection {
+  margin: 0.1rem 0 0.15rem;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+  word-break: break-word; 
+}
+.card__id2 { margin: 0.1rem 0 0.15rem; font-size: 1rem; }
+.card__id { margin: 0 0 0.15rem; font-size: 0.75rem; /*color: var(--text-dim);*/ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .badge {
   font-size: 0.72rem; font-weight: 600; text-transform: lowercase;
