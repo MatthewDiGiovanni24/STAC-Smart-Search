@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Runtime configuration for the stac-federated service."""
+    """Runtime configuration for the STAC Smart Search service."""
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,5 +1,5 @@
 [project]
-name = "stac-federated"
+name = "STAC Smart Search"
 version = "0.1.0"
 description = "Federated STAC catalog discovery service"
 readme = "README.md"

@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
     logger = logging.getLogger(__name__)
 
-    logger.info("Starting stac-federated")
+    logger.info("Starting STAC Smart Search")
     pool = await init_db_pool()
     await run_discovery(pool)
 
@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Application factory."""
     app = FastAPI(
-        title="stac-federated",
+        title="STAC Smart Search",
         description="Federated STAC catalog discovery service.",
         version="0.1.0",
         lifespan=lifespan,

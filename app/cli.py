@@ -1,4 +1,4 @@
-"""Management CLI for stac-federated.
+"""Management CLI for STAC Smart Search.
 
 Replaces the old ``seed_collections.py``. Use it to refresh the collection
 registry out-of-band (e.g. from cron) instead of relying on the startup crawl.
@@ -32,7 +32,7 @@ async def _refresh_registry(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="app.cli", description="stac-federated management CLI")
+    parser = argparse.ArgumentParser(prog="app.cli", description="STAC Smart Search management CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     refresh = sub.add_parser("refresh-registry", help="Crawl catalogs and (re)build the collection registry")

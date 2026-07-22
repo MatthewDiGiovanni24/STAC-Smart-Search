@@ -20,7 +20,7 @@ export default function App() {
     <div className="app">
     <ThemeToggle />
       <header className="masthead">
-        <h1>stac-federated</h1>
+        <h1>STAC Smart Search</h1>
         <p className="tagline">
           Semantic search across federated STAC catalogs — one query, fanned out,
           ranked by relevance, streamed as results arrive.

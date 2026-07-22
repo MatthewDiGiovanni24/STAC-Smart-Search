@@ -1,19 +1,19 @@
-# stac-federated
+# STAC Smart Search
 
-A federated **STAC catalog discovery service**. Earth-observation data is
-scattered across many independent STAC catalogs — NASA CMR-STAC, Microsoft
-Planetary Computer, AWS Earth Search — each queried separately, with no unified
-interface or relevance ranking. `stac-federated` fans a single search out to all
-of them concurrently, normalizes the heterogeneous responses into one schema,
-ranks results by semantic relevance, and streams them back.
+A federated **STAC catalog discovery service** with a modern web frontend. Earth-observation data is scattered across many independent STAC catalogs — NASA CMR-STAC, Microsoft Planetary Computer, AWS Earth Search — each queried separately, with no unified interface or relevance ranking. 
+
+`STAC Smart Search` solves this using a **Two-Stage Hybrid Search**:
+1. **Semantic & Spatial Pre-filtering**: It uses a local `pgvector` database and the RemoteCLIP AI model to find the most semantically relevant datasets that actually overlap your requested Bounding Box and Date.
+![alt text](image.png)
+2. **Progressive Fanout**: It streams requests to the underlying APIs in chunks, dynamically falling back to lower-ranked datasets if top matches have no imagery, and streams normalized results back to the frontend in real-time.
 
 This repository is under active development.
 
-## Running locally
-
-Prerequisites: Docker + Docker Compose.
+## Running the Backend (Docker)
 
 ```bash
+# Tear down any old database volumes (if schemas changed) and rebuild:
+docker compose down -v --rmi local
 docker compose up --build
 ```
 
