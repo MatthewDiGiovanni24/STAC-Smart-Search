@@ -41,6 +41,34 @@ logger = logging.getLogger(__name__)
 # A yielded streaming event: ("item", NormalizedSTACItem) or ("meta", dict).
 StreamEvent = tuple[str, Any]
 
+def apply_exact_match_boost(items: list[NormalizedSTACItem], query: str | None) -> list[NormalizedSTACItem]:
+    """Boosts exact matches to the top and updates the UI confidence score."""
+    if not query:
+        return items
+        
+    query_upper = query.upper()
+    
+    def is_exact_match(item: NormalizedSTACItem) -> bool:
+        col_id = (item.collection or "").upper()
+        item_id = (item.id or "").upper()
+        return query_upper in col_id or query_upper in item_id
+
+    # 1. Update the score for the Frontend UI card
+    for item in items:
+        if is_exact_match(item):
+            # Update the Pydantic field for backend tracking
+            if hasattr(item, "relevance_score"):
+                item.relevance_score = 1.0
+                
+            # Update the raw properties dictionary so the UI shows 100%
+            if item.properties is None:
+                item.properties = {}
+            item.properties["score"] = 1.0
+            item.properties["relevance_score"] = 1.0
+
+    # 2. Sort them to the top of the list
+    items.sort(key=is_exact_match, reverse=True)
+    return items
 
 def _parse_interval(datetime_str: str | None) -> tuple[str | None, str | None]:
     """Split a STAC datetime value into (start, end), honoring open intervals."""
@@ -57,20 +85,14 @@ def _parse_interval(datetime_str: str | None) -> tuple[str | None, str | None]:
 async def _prepare_work(
     request: STACSearchRequest, pool: asyncpg.Pool
 ) -> tuple[list[tuple[Any, GenericSTACAdapter, STACSearchRequest]], list[float] | None]:
-    """Embed the query, shortlist collections, and build per-provider work.
-
-    Returns ``(work, search_vector)`` where each work item is
-    ``(provider_row, adapter, scoped_request)``.
-    """
+    
     start_time, end_time = _parse_interval(request.datetime)
-
-    # Embed the query text with RemoteCLIP (same space as stored collection
-    # embeddings). Offloaded to a thread so torch inference doesn't block the loop.
-    # With no text, the shortlist is spatial/temporal only (no semantic ranking).
     search_vector = await asyncio.to_thread(embed_query, request.text) if request.text else None
 
+    # Fetch all collections (Exact + Semantic)
     candidates = await get_candidate_collections(
         pool=pool,
+        text=request.text,  
         bbox=request.bbox,
         start_time=start_time,
         end_time=end_time,
@@ -78,22 +100,52 @@ async def _prepare_work(
         limit=get_settings().candidate_limit,
     )
 
-    # Group shortlisted collections by their owning provider.
-    provider_to_collections: dict[int, list[str]] = {}
-    for c in candidates:
-        provider_to_collections.setdefault(c["provider_id"], []).append(c["id"])
-
     providers = await list_active_providers(pool)
     provider_lookup = {p["id"]: p for p in providers}
-
     work: list[tuple[Any, GenericSTACAdapter, STACSearchRequest]] = []
-    for pid, collection_ids in provider_to_collections.items():
-        provider = provider_lookup.get(pid)
-        if provider is None:
-            continue  # stale candidate: provider no longer active
-        adapter = GenericSTACAdapter(base_url=provider["base_url"], source=provider["source"])
-        scoped_request = request.model_copy(update={"collections": collection_ids})
-        work.append((provider, adapter, scoped_request))
+
+    if request.text:
+        query_upper = request.text.upper()
+        
+        # Split into Exact Matches and Semantic Matches
+        exact_colls = [c for c in candidates if query_upper in c["id"].upper() or query_upper in c.get("title", "").upper()]
+        semantic_colls = [c for c in candidates if c not in exact_colls][:10]
+        
+        # Group EXACT matches by provider
+        exact_by_prov: dict[int, list[str]] = {}
+        for c in exact_colls:
+            exact_by_prov.setdefault(c["provider_id"], []).append(c["id"])
+            
+        # Group SEMANTIC matches by provider
+        semantic_by_prov: dict[int, list[str]] = {}
+        for c in semantic_colls:
+            semantic_by_prov.setdefault(c["provider_id"], []).append(c["id"])
+
+        # Create dedicated requests for EXACT matches
+        for pid, c_ids in exact_by_prov.items():
+            if provider := provider_lookup.get(pid):
+                adapter = GenericSTACAdapter(base_url=provider["base_url"], source=provider["source"])
+                scoped_req = request.model_copy(update={"collections": c_ids, "limit": 75})
+                work.append((provider, adapter, scoped_req))
+
+        # Create dedicated requests for SEMANTIC matches
+        for pid, c_ids in semantic_by_prov.items():
+            if provider := provider_lookup.get(pid):
+                adapter = GenericSTACAdapter(base_url=provider["base_url"], source=provider["source"])
+                scoped_req = request.model_copy(update={"collections": c_ids, "limit": 100})
+                work.append((provider, adapter, scoped_req))
+
+    else:
+        # Standard flow if no text was typed
+        provider_to_collections: dict[int, list[str]] = {}
+        for c in candidates:
+            provider_to_collections.setdefault(c["provider_id"], []).append(c["id"])
+            
+        for pid, collection_ids in provider_to_collections.items():
+            if provider := provider_lookup.get(pid):
+                adapter = GenericSTACAdapter(base_url=provider["base_url"], source=provider["source"])
+                scoped_req = request.model_copy(update={"collections": collection_ids, "limit": request.limit})
+                work.append((provider, adapter, scoped_req))
 
     return work, search_vector
 
@@ -126,7 +178,7 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
 
     items = await enrich_items_with_collection_context(pool, items)
 
-    # Rerank the merged set by semantic relevance (Phase 5), then cap to limit.
+    # Rerank the merged set by semantic relevance, then cap to limit.
     if get_settings().ranking_enabled and search_vector is not None:
         items = await rank_items(pool, items, search_vector)
     items = items[: request.limit]
@@ -171,7 +223,7 @@ async def stream_search(
     all_items: list[NormalizedSTACItem] = []
     
     # Progressive Fanout Settings
-    TARGET_ITEMS = 40
+    TARGET_ITEMS = request.limit
     CHUNK_SIZE = 10
 
     # Process the collections in smaller chunks
@@ -212,8 +264,10 @@ async def stream_search(
         if len(all_items) >= TARGET_ITEMS:
             break
 
-    # Authoritative global ranking, computed once we hit 40 (or exhaust the list)
     ordered = sort_by_relevance(list(all_items)) if do_rank else all_items
+    
+    ordered = apply_exact_match_boost(ordered, request.text)
+    
     ranked_ids = [item.id for item in ordered if item.id is not None]
 
     registry_warm = (await get_registry_status(pool)).ready

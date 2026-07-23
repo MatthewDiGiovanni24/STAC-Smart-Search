@@ -167,6 +167,7 @@ async def latest_crawl_time(pool: asyncpg.Pool) -> Optional[datetime]:
 
 async def get_candidate_collections(
     pool: Any,
+    text: Optional[str] = None,
     bbox: Optional[List[float]] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
@@ -204,11 +205,29 @@ async def get_candidate_collections(
         """
         args.extend([parsed_end, parsed_start])
 
-    # Semantic ranking (cosine distance ascending == most similar first).
+    # Semantic & Lexical Hybrid Ranking
     if search_embedding:
-        query += f" AND embedding <=> ${len(args)+1}::vector < {get_settings().cosine_distance_threshold}"
-        query += f" ORDER BY embedding <=> ${len(args)+1}::vector ASC"
-        args.append(to_vector_literal(search_embedding))
+        threshold = get_settings().cosine_distance_threshold
+        
+        if text:
+            vector_idx = len(args) + 1
+            text_idx = len(args) + 2
+            
+            # Keep items if they pass the AI threshold OR if they are an exact text match
+            query += f" AND (embedding <=> ${vector_idx}::vector < {threshold} OR id ILIKE ${text_idx} OR title ILIKE ${text_idx})"
+            
+            # Sort exact text matches to the absolute top, then sort by AI similarity
+            query += f" ORDER BY (id ILIKE ${text_idx} OR title ILIKE ${text_idx}) DESC, embedding <=> ${vector_idx}::vector ASC"
+            
+            args.append(to_vector_literal(search_embedding))
+            args.append(f"%{text}%")
+        else:
+            # Fallback to pure semantic search if no text was typed
+            vector_idx = len(args) + 1
+            query += f" AND embedding <=> ${vector_idx}::vector < {threshold}"
+            query += f" ORDER BY embedding <=> ${vector_idx}::vector ASC"
+            
+            args.append(to_vector_literal(search_embedding))
 
     query += f" LIMIT ${len(args)+1}"
     args.append(limit)
