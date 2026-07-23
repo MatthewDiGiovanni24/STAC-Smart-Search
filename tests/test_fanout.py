@@ -8,6 +8,7 @@ fix), timeout/error classification, and the no-text path.
 import pytest
 
 from app.adapters.base import AdapterError, AdapterTimeout
+from app.adapters.stac import GenericSTACAdapter
 from app.schemas.search import NormalizedSTACItem, STACSearchRequest
 from app.services import fanout
 
@@ -51,6 +52,11 @@ def _patch(monkeypatch):
     monkeypatch.setattr(fanout, "get_candidate_collections", _make_async([]))
     monkeypatch.setattr(fanout, "list_active_providers", _make_async([]))
     monkeypatch.setattr(fanout, "embed_query", lambda text: [0.0] * 512)
+
+    async def _pass_through(pool, items):
+        return items
+
+    monkeypatch.setattr(fanout, "enrich_items_with_collection_context", _pass_through)
     # These tests cover orchestration, not ranking; keep rank a passthrough.
     monkeypatch.setattr(fanout, "rank_items", _identity_rank)
 
@@ -61,7 +67,7 @@ def _make_async(return_value):
     return _fn
 
 
-def _req(text=None, limit=20):
+def _req(text=None, limit=50):
     return STACSearchRequest(
         bbox=[-93.5, 29.5, -90.5, 31.0], datetime="2023-06-01/2023-09-01", text=text, limit=limit
     )
@@ -72,6 +78,25 @@ PROVIDERS = [
     {"id": 2, "name": "POCLOUD", "base_url": "https://cmr/stac/POCLOUD", "source": "cmr"},
     {"id": 3, "name": "AWS Earth Search", "base_url": "https://es/v1", "source": "earth_search"},
 ]
+
+
+@pytest.mark.asyncio
+async def test_prepare_work_passes_text_to_collection_prefilter(monkeypatch):
+    captured = {}
+
+    async def _capture_candidates(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(fanout, "get_candidate_collections", _capture_candidates)
+    monkeypatch.setattr(fanout, "list_active_providers", _make_async([]))
+    monkeypatch.setattr(fanout, "embed_query", lambda text: [0.0] * 512)
+
+    request = _req(text="flood")
+    await fanout._prepare_work(request, pool=object())
+
+    assert captured["text"] == "flood"
+    assert captured["search_embedding"] is not None
 
 
 @pytest.mark.asyncio
@@ -172,6 +197,22 @@ async def test_ranking_applied_then_truncated_to_limit(monkeypatch):
     assert called["vector"] is not None                 # ranking received the query vector
     assert [it.id for it in resp.items] == ["c", "b"]    # reranked order, then truncated to 2
     assert resp.total == 2
+
+
+@pytest.mark.asyncio
+async def test_exact_match_boost_sets_relevance_score_and_moves_item_to_top():
+    items = [
+        _item("match-1", "cmr"),
+        _item("other-2", "cmr"),
+    ]
+    items[0].collection = "match-collection"
+    items[1].collection = "different-collection"
+
+    boosted = fanout.apply_exact_match_boost(items, "match")
+
+    assert boosted[0].id == "match-1"
+    assert boosted[0].relevance_score == 1.0
+    assert boosted[1].relevance_score is None
 
 
 @pytest.mark.asyncio

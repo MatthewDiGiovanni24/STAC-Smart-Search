@@ -167,6 +167,7 @@ async def latest_crawl_time(pool: asyncpg.Pool) -> Optional[datetime]:
 
 async def get_candidate_collections(
     pool: Any,
+    text: Optional[str] = None,
     bbox: Optional[List[float]] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
@@ -194,7 +195,7 @@ async def get_candidate_collections(
         """
         args.extend([search_max_x, search_min_x, search_max_y, search_min_y])
 
-    # Temporal overlap.
+    # Temporal overlap
     if start_time and end_time:
         parsed_start = parse_date(start_time)
         parsed_end = parse_date(end_time)
@@ -204,11 +205,26 @@ async def get_candidate_collections(
         """
         args.extend([parsed_end, parsed_start])
 
-    # Semantic ranking (cosine distance ascending == most similar first).
+     # Semantic & Lexical Ranking
     if search_embedding:
-        query += f" AND embedding <=> ${len(args)+1}::vector < {get_settings().cosine_distance_threshold}"
-        query += f" ORDER BY embedding <=> ${len(args)+1}::vector ASC"
-        args.append(to_vector_literal(search_embedding))
+        threshold = get_settings().cosine_distance_threshold
+        
+        if text:
+            # 🟢 FIX: Actually filter by the text you typed!
+            vector_idx = len(args) + 1
+            text_idx = len(args) + 2
+            
+            query += f" AND (embedding <=> ${vector_idx}::vector < {threshold} OR id ILIKE ${text_idx} OR title ILIKE ${text_idx})"
+            query += f" ORDER BY (id ILIKE ${text_idx} OR title ILIKE ${text_idx}) DESC, embedding <=> ${vector_idx}::vector ASC"
+            
+            args.append(to_vector_literal(search_embedding))
+            args.append(f"%{text}%")
+        else:
+            vector_idx = len(args) + 1
+            query += f" AND embedding <=> ${vector_idx}::vector < {threshold}"
+            query += f" ORDER BY embedding <=> ${vector_idx}::vector ASC"
+            
+            args.append(to_vector_literal(search_embedding))
 
     query += f" LIMIT ${len(args)+1}"
     args.append(limit)

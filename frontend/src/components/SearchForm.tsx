@@ -54,7 +54,7 @@ export function SearchForm({ onSearch, disabled }: Props) {
       bbox: bbox as [number, number, number, number],
       datetime: `${start}T00:00:00Z/${end}T23:59:59Z`,
       text: text.trim() || undefined,
-      limit: 20,
+      limit: 50,
     });
   }
 

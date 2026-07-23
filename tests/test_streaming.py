@@ -53,6 +53,11 @@ def _patch(monkeypatch):
     monkeypatch.setattr(fanout, "GenericSTACAdapter", _FakeAdapter)
     monkeypatch.setattr(fanout, "list_active_providers", _make_async(PROVIDERS))
     monkeypatch.setattr(fanout, "embed_query", lambda text: [1.0, 0.0])
+
+    async def _pass_through(pool, items):
+        return items
+
+    monkeypatch.setattr(fanout, "enrich_items_with_collection_context", _pass_through)
     monkeypatch.setattr(fanout, "get_registry_status", _make_async(SimpleNamespace(ready=True)))
 
     async def _score(pool, items, qv):
@@ -86,6 +91,29 @@ async def test_stream_yields_items_then_single_meta(monkeypatch):
     assert meta["total"] == 3
     assert meta["registry_warm"] is True
     assert set(meta["sources"]) == {"LPCLOUD", "POCLOUD"}
+
+
+@pytest.mark.asyncio
+async def test_stream_exact_match_items_are_boosted_before_yield(monkeypatch):
+    monkeypatch.setattr(fanout, "get_candidate_collections", _make_async([
+        {"provider_id": 1, "id": "A"},
+    ]))
+    _FakeAdapter.behavior["https://cmr/stac/LPCLOUD"] = (
+        "items",
+        [_item("match-1"), _item("other-2")],
+    )
+
+    async def _score(pool, items, qv):
+        for it in items:
+            it.relevance_score = 0.2
+        return items
+
+    monkeypatch.setattr(fanout, "score_items", _score)
+
+    events = [ev async for ev in fanout.stream_search(_req(text="match"), pool=object())]
+    item_events = [e[1] for e in events if e[0] == "item"]
+
+    assert any(it.id == "match-1" and it.relevance_score == 1.0 for it in item_events)
 
 
 @pytest.mark.asyncio

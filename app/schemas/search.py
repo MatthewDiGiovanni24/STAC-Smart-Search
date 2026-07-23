@@ -38,7 +38,7 @@ class STACSearchRequest(BaseModel):
         description="Optional list of collection IDs to restrict the search to.",
     )
     limit: int = Field(
-        default=20,
+        default=50,
         ge=1,
         le=100,
         description="Maximum number of items to return (per merged response).",
