@@ -17,6 +17,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
@@ -41,34 +42,52 @@ logger = logging.getLogger(__name__)
 # A yielded streaming event: ("item", NormalizedSTACItem) or ("meta", dict).
 StreamEvent = tuple[str, Any]
 
-def apply_exact_match_boost(items: list[NormalizedSTACItem], query: str | None) -> list[NormalizedSTACItem]:
-    """Boosts exact matches to the top and updates the UI confidence score."""
-    if not query:
-        return items
-        
-    query_upper = query.upper()
-    
-    def is_exact_match(item: NormalizedSTACItem) -> bool:
-        col_id = (item.collection or "").upper()
-        item_id = (item.id or "").upper()
-        return query_upper in col_id or query_upper in item_id
+EXACT = "exact"
+SEMANTIC = "semantic"
+LANES = (EXACT, SEMANTIC)
 
-    # 1. Update the score for the Frontend UI card
-    for item in items:
-        if is_exact_match(item):
-            # Update the Pydantic field for backend tracking
-            if hasattr(item, "relevance_score"):
-                item.relevance_score = 1.0
-                
-            # Update the raw properties dictionary so the UI shows 100%
-            if item.properties is None:
-                item.properties = {}
-            item.properties["score"] = 1.0
-            item.properties["relevance_score"] = 1.0
+# Providers queried concurrently within one lane.
+CHUNK_SIZE = 10
 
-    # 2. Sort them to the top of the list
-    items.sort(key=is_exact_match, reverse=True)
-    return items
+
+@dataclass(frozen=True)
+class WorkItem:
+    """One provider search, tagged with the lane whose quota it draws from."""
+
+    provider: Any
+    adapter: GenericSTACAdapter
+    request: STACSearchRequest
+    lane: str
+
+
+def _lane_quotas(limit: int, has_text: bool) -> dict[str, int]:
+    """Split the item budget between the lanes.
+
+    Without query text there is no lexical lane, so the whole budget is semantic.
+    """
+    if not has_text:
+        return {EXACT: 0, SEMANTIC: limit}
+    exact = limit // 2
+    return {EXACT: exact, SEMANTIC: limit - exact}
+
+
+def _blocked_order(items: list[NormalizedSTACItem]) -> list[NormalizedSTACItem]:
+    """Order exact matches first, each block internally by relevance descending.
+
+    Strictly blocked: the two lanes' scores are never compared. Python's sort is
+    stable, so equal keys keep arrival order. Unscored items sort last within
+    their own block — ``-relevance_score`` alone would rank ``None`` as 0.0 and
+    interleave unscored items with genuinely low-scoring ones.
+    """
+    return sorted(
+        items,
+        key=lambda it: (
+            it.properties.get("match_type") != EXACT,
+            it.relevance_score is None,
+            -(it.relevance_score or 0.0),
+        ),
+    )
+
 
 def _parse_interval(datetime_str: str | None) -> tuple[str | None, str | None]:
     """Split a STAC datetime value into (start, end), honoring open intervals."""
@@ -84,15 +103,19 @@ def _parse_interval(datetime_str: str | None) -> tuple[str | None, str | None]:
 
 async def _prepare_work(
     request: STACSearchRequest, pool: asyncpg.Pool
-) -> tuple[list[tuple[Any, GenericSTACAdapter, STACSearchRequest]], list[float] | None]:
-    
+) -> tuple[list[WorkItem], list[float] | None]:
+    """Embed the query, shortlist collections, and build lane-tagged work.
+
+    Returns ``(work, search_vector)``. Each work item is scoped to its lane's
+    quota, so no single provider can consume more than its lane is entitled to.
+    """
     start_time, end_time = _parse_interval(request.datetime)
     search_vector = await asyncio.to_thread(embed_query, request.text) if request.text else None
 
     # Fetch all collections (Exact + Semantic)
     candidates = await get_candidate_collections(
         pool=pool,
-        text=request.text,  
+        text=request.text,
         bbox=request.bbox,
         start_time=start_time,
         end_time=end_time,
@@ -102,70 +125,82 @@ async def _prepare_work(
 
     providers = await list_active_providers(pool)
     provider_lookup = {p["id"]: p for p in providers}
-    work: list[tuple[Any, GenericSTACAdapter, STACSearchRequest]] = []
+    quotas = _lane_quotas(request.limit, bool(request.text))
 
-    if request.text:
-        query_upper = request.text.upper()
-        
-        # Split into Exact Matches and Semantic Matches
-        exact_colls = [c for c in candidates if query_upper in c["id"].upper() or query_upper in c.get("title", "").upper()]
-        semantic_colls = [c for c in candidates if c not in exact_colls][:10]
-        
-        # Group EXACT matches by provider
-        exact_by_prov: dict[int, list[str]] = {}
-        for c in exact_colls:
-            exact_by_prov.setdefault(c["provider_id"], []).append(c["id"])
-            
-        # Group SEMANTIC matches by provider
-        semantic_by_prov: dict[int, list[str]] = {}
-        for c in semantic_colls:
-            semantic_by_prov.setdefault(c["provider_id"], []).append(c["id"])
+    def _build(lane: str, collections: list[dict[str, Any]]) -> list[WorkItem]:
+        by_provider: dict[int, list[str]] = {}
+        for c in collections:
+            by_provider.setdefault(c["provider_id"], []).append(c["id"])
 
-        # Create dedicated requests for EXACT matches
-        for pid, c_ids in exact_by_prov.items():
-            if provider := provider_lookup.get(pid):
+        built: list[WorkItem] = []
+        for pid, c_ids in by_provider.items():
+            if provider := provider_lookup.get(pid):  # else stale: provider inactive
                 adapter = GenericSTACAdapter(base_url=provider["base_url"], source=provider["source"])
-                scoped_req = request.model_copy(update={"collections": c_ids, "limit": 75})
-                work.append((provider, adapter, scoped_req))
+                scoped_req = request.model_copy(
+                    update={"collections": c_ids, "limit": max(1, quotas[lane])}
+                )
+                built.append(WorkItem(provider, adapter, scoped_req, lane))
+        return built
 
-        # Create dedicated requests for SEMANTIC matches
-        for pid, c_ids in semantic_by_prov.items():
-            if provider := provider_lookup.get(pid):
-                adapter = GenericSTACAdapter(base_url=provider["base_url"], source=provider["source"])
-                scoped_req = request.model_copy(update={"collections": c_ids, "limit": 100})
-                work.append((provider, adapter, scoped_req))
+    if not request.text:
+        # No text means no lexical lane; everything draws on the semantic budget.
+        return _build(SEMANTIC, candidates), search_vector
 
-    else:
-        # Standard flow if no text was typed
-        provider_to_collections: dict[int, list[str]] = {}
-        for c in candidates:
-            provider_to_collections.setdefault(c["provider_id"], []).append(c["id"])
-            
-        for pid, collection_ids in provider_to_collections.items():
-            if provider := provider_lookup.get(pid):
-                adapter = GenericSTACAdapter(base_url=provider["base_url"], source=provider["source"])
-                scoped_req = request.model_copy(update={"collections": collection_ids, "limit": request.limit})
-                work.append((provider, adapter, scoped_req))
+    # The exact/semantic split is decided in SQL (see get_candidate_collections)
+    # so the label always agrees with the ordering the query itself applied.
+    exact_colls = [c for c in candidates if c.get("is_exact")]
+    exact_keys = {(c["provider_id"], c["id"]) for c in exact_colls}
+    semantic_colls = [c for c in candidates if (c["provider_id"], c["id"]) not in exact_keys]
 
-    return work, search_vector
+    # Cap the semantic shortlist by its own item quota, not a magic number: in the
+    # worst case each collection contributes one item, so this many can still fill
+    # the quota. Exact matches are what the user literally typed, so they are not
+    # capped here — their item budget bounds them.
+    semantic_colls = semantic_colls[: max(1, quotas[SEMANTIC])]
+
+    return _build(EXACT, exact_colls) + _build(SEMANTIC, semantic_colls), search_vector
+
+
+def _apply_lane_quotas(
+    by_lane: dict[str, list[NormalizedSTACItem]], quotas: dict[str, int], limit: int
+) -> list[NormalizedSTACItem]:
+    """Take each lane's quota, then let either lane spill into what the other left.
+
+    Backfill happens only after both lanes are known to be exhausted, so the
+    guarantee is "at least ``min(available, quota)`` from each lane". Symmetric:
+    whichever lane is short, the other fills the remainder.
+    """
+    kept: list[NormalizedSTACItem] = []
+    leftovers: dict[str, list[NormalizedSTACItem]] = {}
+    for lane in LANES:
+        items = by_lane.get(lane, [])
+        kept.extend(items[: quotas[lane]])
+        leftovers[lane] = items[quotas[lane] :]
+
+    # Spill in lane order so exact keeps first claim on the unused budget.
+    for lane in LANES:
+        if len(kept) >= limit:
+            break
+        kept.extend(leftovers[lane][: limit - len(kept)])
+    return kept[:limit]
 
 
 async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACSearchResponse:
-    """Batch path: query all shortlisted providers, rank the full merged set."""
+    """Batch path: query all shortlisted providers, rank within each lane."""
     start = time.perf_counter()
     work, search_vector = await _prepare_work(request, pool)
 
     results = await asyncio.gather(
-        *(adapter.search(req) for _, adapter, req in work),
+        *(w.adapter.search(w.request) for w in work),
         return_exceptions=True,
     )
 
     sources: dict[str, str] = {}
     items: list[NormalizedSTACItem] = []
-    for (provider, _, _), result in zip(work, results):
+    for w, result in zip(work, results):
         # Key by provider name so the CMR child catalogs are reported
         # individually instead of collapsing into a single "cmr" entry.
-        key = provider["name"]
+        key = w.provider["name"]
         if isinstance(result, AdapterTimeout):
             sources[key] = "timeout"
             logger.warning("Timeout searching %s", key)
@@ -174,14 +209,26 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
             logger.error("Error searching %s: %s", key, result)
         else:
             sources[key] = "ok"
+            if request.text:
+                for item in result:
+                    item.properties["match_type"] = w.lane
             items.extend(result)
 
     items = await enrich_items_with_collection_context(pool, items)
 
-    # Rerank the merged set by semantic relevance, then cap to limit.
+    # Rerank the merged set by semantic relevance, then apply the lane budgets.
     if get_settings().ranking_enabled and search_vector is not None:
         items = await rank_items(pool, items, search_vector)
-    items = items[: request.limit]
+
+    if request.text:
+        by_lane: dict[str, list[NormalizedSTACItem]] = {lane: [] for lane in LANES}
+        for item in items:
+            by_lane[item.properties.get("match_type", SEMANTIC)].append(item)
+        items = _blocked_order(
+            _apply_lane_quotas(by_lane, _lane_quotas(request.limit, True), request.limit)
+        )
+    else:
+        items = items[: request.limit]
 
     return STACSearchResponse(
         sources=sources,
@@ -191,18 +238,48 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
     )
 
 
-async def _run_provider(
-    provider: Any, adapter: GenericSTACAdapter, req: STACSearchRequest
-) -> tuple[Any, str, list[NormalizedSTACItem]]:
+async def _run_provider(work: WorkItem) -> tuple[WorkItem, str, list[NormalizedSTACItem]]:
     """Run one provider search, capturing status. Never raises."""
     try:
-        return provider, "ok", await adapter.search(req)
+        return work, "ok", await work.adapter.search(work.request)
     except AdapterTimeout:
-        logger.warning("Timeout searching %s", provider["name"])
-        return provider, "timeout", []
+        logger.warning("Timeout searching %s", work.provider["name"])
+        return work, "timeout", []
     except Exception as exc:  # noqa: BLE001 - a bad provider must not kill the stream
-        logger.error("Error searching %s: %s", provider["name"], exc)
-        return provider, "error", []
+        logger.error("Error searching %s: %s", work.provider["name"], exc)
+        return work, "error", []
+
+
+@dataclass(frozen=True)
+class _LaneDone:
+    """Queue sentinel: this lane has no more provider results coming."""
+
+    lane: str
+
+
+async def _lane_producer(
+    lane: str, work: list[WorkItem], queue: asyncio.Queue, stop: asyncio.Event
+) -> None:
+    """Query one lane's providers in chunks, pushing results as they land.
+
+    Each lane chunks independently, so a saturated lane can never hold back the
+    other one's requests the way a single shared chunk sequence did.
+    """
+    try:
+        for i in range(0, len(work), CHUNK_SIZE):
+            if stop.is_set():
+                break
+            tasks = [asyncio.create_task(_run_provider(w)) for w in work[i : i + CHUNK_SIZE]]
+            try:
+                for coro in asyncio.as_completed(tasks):
+                    queue.put_nowait(await coro)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+    finally:
+        # put_nowait, not await: this also runs while the task is being cancelled.
+        queue.put_nowait(_LaneDone(lane))
 
 
 async def stream_search(
@@ -210,64 +287,86 @@ async def stream_search(
 ) -> AsyncIterator[StreamEvent]:
     """Stream provider results as they arrive, then a final ``meta`` event.
 
-    Uses a Progressive Fanout: queries catalogs in chunks so we don't spam APIs.
-    Yields ``("item", NormalizedSTACItem)`` the moment a provider responds. 
-    Stops dynamically once a target quota of items is met.
+    Both lanes run concurrently, each with its own item quota, so exact matches
+    can no longer consume the whole budget and starve semantic results. An item
+    is yielded only while its own lane is under quota; anything beyond that is
+    held back and released at the end, but only into budget the other lane
+    turned out not to need.
     """
     start = time.perf_counter()
     settings = get_settings()
     work, search_vector = await _prepare_work(request, pool)
     do_rank = settings.ranking_enabled and search_vector is not None
 
+    quotas = _lane_quotas(request.limit, bool(request.text))
+    work_by_lane: dict[str, list[WorkItem]] = {lane: [] for lane in LANES}
+    for w in work:
+        work_by_lane[w.lane].append(w)
+
     sources: dict[str, str] = {}
     all_items: list[NormalizedSTACItem] = []
-    
-    # Progressive Fanout Settings
-    TARGET_ITEMS = request.limit
-    CHUNK_SIZE = 10
+    counts: dict[str, int] = {lane: 0 for lane in LANES}
+    # Items their own lane has no room for, held in case the other lane
+    # underfills. Never released before both lanes are done.
+    overflow: dict[str, list[NormalizedSTACItem]] = {lane: [] for lane in LANES}
 
-    # Process the collections in smaller chunks
-    for i in range(0, len(work), CHUNK_SIZE):
-        chunk = work[i : i + CHUNK_SIZE]
-        
-        # Fire off requests only for the current chunk
-        tasks = [asyncio.create_task(_run_provider(p, a, r)) for p, a, r in chunk]
-        
-        try:
-            for coro in asyncio.as_completed(tasks):
-                provider, status, batch = await coro
-                sources[provider["name"]] = status
-                
-                if batch:
-                    batch = await enrich_items_with_collection_context(pool, batch)
-                    if do_rank:
-                        await score_items(pool, batch, search_vector)
-                        
-                for item in batch:
+    queue: asyncio.Queue = asyncio.Queue()
+    stop = asyncio.Event()
+    producers = [
+        asyncio.create_task(_lane_producer(lane, work_by_lane[lane], queue, stop))
+        for lane in LANES
+    ]
+
+    try:
+        open_lanes = set(LANES)
+        while open_lanes:
+            message = await queue.get()
+            if isinstance(message, _LaneDone):
+                open_lanes.discard(message.lane)
+                continue
+
+            w, status, batch = message
+            sources[w.provider["name"]] = status
+
+            if batch:
+                batch = await enrich_items_with_collection_context(pool, batch)
+                if do_rank:
+                    await score_items(pool, batch, search_vector)
+
+            for item in batch:
+                if request.text:
+                    item.properties["match_type"] = w.lane
+                if len(all_items) >= request.limit:
+                    break
+                if counts[w.lane] < quotas[w.lane]:
+                    counts[w.lane] += 1
                     all_items.append(item)
                     yield "item", item
-                    
-                    # If we hit our target, stop yielding items from this batch
-                    if len(all_items) >= TARGET_ITEMS:
-                        break
-                        
-                # Break out of the task-completion loop if quota is met
-                if len(all_items) >= TARGET_ITEMS:
-                    break
-        finally:
-            # Clean up any pending tasks in this chunk if we broke out early
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-                    
-        # If we hit our target, do not proceed to the next chunk
-        if len(all_items) >= TARGET_ITEMS:
-            break
+                elif len(overflow[w.lane]) < request.limit:
+                    overflow[w.lane].append(item)
 
-    ordered = sort_by_relevance(list(all_items)) if do_rank else all_items
-    
-    ordered = apply_exact_match_boost(ordered, request.text)
-    
+            if len(all_items) >= request.limit:
+                break
+    finally:
+        stop.set()
+        for producer in producers:
+            producer.cancel()
+        await asyncio.gather(*producers, return_exceptions=True)
+
+    # Backfill: both lanes are finished, so any remaining budget is genuinely
+    # unused and either lane may claim it. Exact gets first refusal.
+    for lane in LANES:
+        for item in overflow[lane]:
+            if len(all_items) >= request.limit:
+                break
+            all_items.append(item)
+            yield "item", item
+
+    if request.text:
+        ordered = _blocked_order(all_items)
+    else:
+        ordered = sort_by_relevance(list(all_items)) if do_rank else all_items
+
     ranked_ids = [item.id for item in ordered if item.id is not None]
 
     registry_warm = (await get_registry_status(pool)).ready

@@ -33,7 +33,17 @@ export function ItemCard({ item, registerRef }: Props) {
       onClick={() => href && window.open(href, '_blank', 'noopener,noreferrer')}
     >
       <div className="card__head">
-        <span className={`badge badge--${item.catalog_source}`}>{item.catalog_source}</span>
+        <div className="card__tags">
+          <span className={`badge badge--${item.catalog_source}`}>{item.catalog_source}</span>
+          {item.properties?.match_type === 'exact' && (
+            <span
+              className="badge badge--exact"
+              title="Your query text appears in this collection's id or title"
+            >
+              Direct match
+            </span>
+          )}
+        </div>
         {pct != null && <span className="card__score-num">{pct}%</span>}
       </div>
 

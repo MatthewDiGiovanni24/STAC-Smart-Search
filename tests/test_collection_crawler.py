@@ -5,12 +5,16 @@ extent/temporal extraction) against synthetic umm_json fixtures shaped like
 CMR's real ``collections.umm_json`` responses. No network is used.
 """
 
+import pytest
+
 from app.services.collection_crawler import (
     _cmr_bbox,
     _cmr_item_to_raw,
     _cmr_provider_map,
     _cmr_stac_id,
     _cmr_temporal,
+    _search_after_bytes,
+    crawl_cmr_native,
 )
 
 
@@ -150,3 +154,88 @@ def test_cmr_temporal_ongoing_has_no_end():
 
 def test_cmr_temporal_missing_is_none():
     assert _cmr_temporal({}) is None
+
+
+# --- Defect 1: non-ASCII CMR-Search-After cursor must round-trip safely -------
+
+
+class _FakeHeaders:
+    def __init__(self, raw):
+        self.raw = raw
+
+
+class _FakeResp:
+    """Minimal httpx.Response stand-in exposing .headers.raw and .json()."""
+
+    def __init__(self, items, cursor):  # cursor: bytes | None
+        raw = [(b"content-type", b"application/json")]
+        if cursor is not None:
+            raw.append((b"CMR-Search-After", cursor))
+        self.headers = _FakeHeaders(raw)
+        self._items = items
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"items": self._items}
+
+
+class _FakeClient:
+    """Mimics the one httpx behavior that matters: str header values are
+    ASCII-encoded (raising on non-ASCII), bytes values pass through."""
+
+    def __init__(self, pages):
+        self._pages = list(pages)
+        self.sent_cursors = []
+
+    async def get(self, url, params=None, headers=None, timeout=None):
+        headers = headers or {}
+        for value in headers.values():
+            if isinstance(value, str):
+                value.encode("ascii")  # httpx does this; raises on non-ASCII str
+        self.sent_cursors.append(headers.get("CMR-Search-After"))
+        return self._pages.pop(0) if self._pages else _FakeResp([], None)
+
+
+_ITEM_A = {"meta": {"provider-id": "LPCLOUD"}, "umm": {"ShortName": "EMITL2ARFL", "Version": "1"}}
+_ITEM_B = {"meta": {"provider-id": "LPCLOUD"}, "umm": {"ShortName": "HLSL30", "Version": "2.0"}}
+NON_ASCII_CURSOR = b"sortkey_R\xe9flectance_owner_12345"  # 0xE9 = 'é' (latin-1)
+
+
+def test_search_after_bytes_reads_raw_cursor():
+    assert _search_after_bytes(_FakeResp([], NON_ASCII_CURSOR)) == NON_ASCII_CURSOR
+    assert _search_after_bytes(_FakeResp([], None)) is None
+
+
+@pytest.mark.asyncio
+async def test_crawl_roundtrips_non_ascii_cursor_without_crashing():
+    """The regression: a cursor with non-ASCII bytes fed back as a str crashed
+    httpx. Sent as raw bytes it round-trips, so pagination continues."""
+    client = _FakeClient([
+        _FakeResp([_ITEM_A], NON_ASCII_CURSOR),  # page 1 → hands back a non-ASCII cursor
+        _FakeResp([_ITEM_B], None),              # page 2 → no cursor, end
+    ])
+    rows, skipped = await crawl_cmr_native(client, {"LPCLOUD": 42})
+
+    assert [r["id"] for r in rows] == ["EMITL2ARFL_1", "HLSL30_2.0"]  # both pages crawled
+    assert client.sent_cursors[0] is None                            # page 1: no cursor
+    assert client.sent_cursors[1] == NON_ASCII_CURSOR                # page 2: raw bytes, not str
+
+
+@pytest.mark.asyncio
+async def test_crawl_keeps_partial_pages_on_failure():
+    """An unexpected page failure stops the crawl but keeps what it collected."""
+
+    class _FailSecond:
+        def __init__(self):
+            self.n = 0
+
+        async def get(self, url, params=None, headers=None, timeout=None):
+            self.n += 1
+            if self.n == 1:
+                return _FakeResp([_ITEM_A], NON_ASCII_CURSOR)
+            raise RuntimeError("boom")
+
+    rows, skipped = await crawl_cmr_native(_FailSecond(), {"LPCLOUD": 42})
+    assert [r["id"] for r in rows] == ["EMITL2ARFL_1"]  # page 1 preserved, not lost

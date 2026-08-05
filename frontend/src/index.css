@@ -210,6 +210,15 @@ body {
 .badge--planetary_computer { background: var(--pc); }
 .badge--earth_search { background: var(--earth); }
 
+.card__tags { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+/* Factual label, not a score: outlined accent pill, distinct from source badges. */
+.badge--exact {
+  background: var(--accent-weak);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  text-transform: none;
+}
+
 .score-bar { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-bottom: 0.7rem; }
 .score-bar__fill { height: 100%; background: linear-gradient(90deg, var(--accent-weak), var(--accent)); transition: width 0.4s ease; }
 

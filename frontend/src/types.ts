@@ -21,6 +21,7 @@ export interface Item {
   properties?: {
     title?: string;
     description?: string;
+    match_type?: 'exact' | 'semantic';
   };
 }
 

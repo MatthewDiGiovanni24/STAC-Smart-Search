@@ -179,14 +179,21 @@ async def get_candidate_collections(
     Applies a bbox AABB-overlap filter and a temporal-interval-overlap filter
     (NULL extents are treated as "unknown" and always pass), then — when a query
     embedding is supplied — orders by cosine distance and takes the top ``limit``.
+
+    Each row carries ``is_exact``, computed by the same lexical expression the
+    ``ORDER BY`` sorts on, so callers never re-derive the exact/semantic split
+    from a different set of columns than the query itself used.
     """
-    query = "SELECT provider_id, id FROM collections WHERE true"
+    where = " WHERE true"
+    order = ""
+    # No text (or no embedding) means there is no lexical match to speak of.
+    exact_select = "false AS is_exact"
     args: List[Any] = []
 
     # Spatial overlap: collection box intersects the search box.
     if bbox and len(bbox) == 4:
         search_min_x, search_min_y, search_max_x, search_max_y = bbox
-        query += f"""
+        where += f"""
             AND (
                 min_x IS NULL OR
                 (min_x <= ${len(args)+1} AND max_x >= ${len(args)+2} AND
@@ -199,7 +206,7 @@ async def get_candidate_collections(
     if start_time and end_time:
         parsed_start = parse_date(start_time)
         parsed_end = parse_date(end_time)
-        query += f"""
+        where += f"""
             AND (start_time IS NULL OR start_time <= ${len(args)+1}::timestamptz)
             AND (end_time IS NULL OR end_time >= ${len(args)+2}::timestamptz)
         """
@@ -208,30 +215,42 @@ async def get_candidate_collections(
     # Semantic & Lexical Hybrid Ranking
     if search_embedding:
         threshold = get_settings().cosine_distance_threshold
-        
+
         if text:
             vector_idx = len(args) + 1
             text_idx = len(args) + 2
-            
-            # Keep items if they pass the AI threshold OR if they are an exact text match
-            query += f" AND (embedding <=> ${vector_idx}::vector < {threshold} OR id ILIKE ${text_idx} OR title ILIKE ${text_idx})"
-            
-            # Sort exact text matches to the absolute top, then sort by AI similarity
-            query += f" ORDER BY (id ILIKE ${text_idx} OR title ILIKE ${text_idx}) DESC, embedding <=> ${vector_idx}::vector ASC"
-            
+
+            # One expression, used three ways: to admit lexical matches that miss
+            # the AI threshold, to sort them first, and to label them for the
+            # caller. Callers must not re-derive this.
+            exact_expr = f"(id ILIKE ${text_idx} OR title ILIKE ${text_idx})"
+            exact_select = f"{exact_expr} AS is_exact"
+
+            where += f" AND (embedding <=> ${vector_idx}::vector < {threshold} OR {exact_expr})"
+            order = f" ORDER BY {exact_expr} DESC, embedding <=> ${vector_idx}::vector ASC"
+
             args.append(to_vector_literal(search_embedding))
             args.append(f"%{text}%")
         else:
             # Fallback to pure semantic search if no text was typed
             vector_idx = len(args) + 1
-            query += f" AND embedding <=> ${vector_idx}::vector < {threshold}"
-            query += f" ORDER BY embedding <=> ${vector_idx}::vector ASC"
-            
+            where += f" AND embedding <=> ${vector_idx}::vector < {threshold}"
+            order = f" ORDER BY embedding <=> ${vector_idx}::vector ASC"
+
             args.append(to_vector_literal(search_embedding))
 
+    query = f"SELECT provider_id, id, title, {exact_select} FROM collections{where}{order}"
     query += f" LIMIT ${len(args)+1}"
     args.append(limit)
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *args)
-    return [{"provider_id": row["provider_id"], "id": row["id"]} for row in rows]
+    return [
+        {
+            "provider_id": row["provider_id"],
+            "id": row["id"],
+            "title": row["title"],
+            "is_exact": bool(row["is_exact"]),
+        }
+        for row in rows
+    ]

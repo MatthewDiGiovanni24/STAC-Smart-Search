@@ -40,8 +40,12 @@ class STACSearchRequest(BaseModel):
     limit: int = Field(
         default=100,
         ge=1,
-        le=100,
-        description="Maximum number of items to return (per merged response).",
+        le=500,
+        description=(
+            "Maximum number of items to return (per merged response). Split "
+            "evenly between exact and semantic matches when text is supplied, "
+            "so the default of 100 yields 50 of each."
+        ),
     )
     sources: list[str] | None = Field(
         default=None,

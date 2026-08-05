@@ -15,7 +15,13 @@ from app.services.fanout import stream_search
 
 
 def _item_payload(item: NormalizedSTACItem) -> dict:
-    """Project a normalized item onto the fields sent on an SSE ``item`` event."""
+    """Project a normalized item onto the fields sent on an SSE ``item`` event.
+
+    ``properties`` is sent whole (parity with the batch JSON response), not
+    hand-picked: cherry-picking fields here is exactly what let ``match_type``
+    reach the model but never the wire. Anything the batch path exposes on an
+    item, the stream exposes too.
+    """
     return {
         "id": item.id,
         "collection": item.collection,
@@ -27,6 +33,7 @@ def _item_payload(item: NormalizedSTACItem) -> dict:
         "cloud_cover": item.cloud_cover,
         "platform": item.platform,
         "assets": item.assets,
+        "properties": item.properties,
     }
 
 
