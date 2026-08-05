@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     embedding_device: str = "auto"
     # Batch size for encoding many collection descriptions at once.
     embedding_batch_size: int = 64
+    # Optional HuggingFace token for the checkpoint download. Anonymous downloads
+    # are rate-limited (429), which fails a cold start; set HF_TOKEN to de-risk it.
+    # None = anonymous.
+    hf_token: str | None = None
 
     # --- Collection registry / startup crawl ------------------------------
     # Whether the startup lifespan kicks off a background registry crawl.
