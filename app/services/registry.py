@@ -201,8 +201,8 @@ async def get_candidate_collections(
     """
     where = " WHERE true"
     order = ""
-    # Default tier is 3 (semantic): no text means no lexical match to speak of.
-    tier_select = "3 AS match_tier"
+    # Default tier is 4 (semantic): no text means no lexical/fuzzy match.
+    tier_select = "4 AS match_tier"
     args: List[Any] = []
 
     # Spatial overlap: collection box intersects the search box.
@@ -232,6 +232,7 @@ async def get_candidate_collections(
         threshold = get_settings().cosine_distance_threshold
 
         if text:
+            fuzzy_tau = get_settings().fuzzy_word_similarity_threshold
             vec_i = len(args) + 1
             args.append(to_vector_literal(search_embedding))
             q_i = len(args) + 1
@@ -241,30 +242,44 @@ async def get_candidate_collections(
             sub_i = len(args) + 1
             args.append(f"%{text}%")      # substring (subsumes prefix + exact)
 
+            # word_similarity(query, title): finds the best-matching run of
+            # trigrams in a longer title, so a short misspelled query ("methan
+            # plume") still scores against "…Methane Plume Complexes". Plain
+            # similarity() would penalize the length mismatch. Fuzzy matches on
+            # TITLE only — ids are opaque codes where trigram overlap is noise.
+            fuzzy_score = f"word_similarity(lower(${q_i}), lower(title))"
+
             # Lexical tiers, decided in SQL so the label always agrees with the
             # order the query applied. Exact is case-insensitive on BOTH sides
             # (lower()=lower(), not ILIKE, so '_'/'%' in a pasted id aren't
             # treated as wildcards). Tier order: exact(0) > prefix(1) >
-            # substring(2) > semantic(3).
+            # substring(2) > fuzzy(3) > semantic(4).
             tier_expr = (
                 f"CASE "
                 f"WHEN lower(id) = lower(${q_i}) OR lower(title) = lower(${q_i}) THEN 0 "
                 f"WHEN id ILIKE ${pre_i} OR title ILIKE ${pre_i} THEN 1 "
                 f"WHEN id ILIKE ${sub_i} OR title ILIKE ${sub_i} THEN 2 "
-                f"ELSE 3 END"
+                f"WHEN {fuzzy_score} >= {fuzzy_tau} THEN 3 "
+                f"ELSE 4 END"
             )
             tier_select = f"{tier_expr} AS match_tier"
 
             # Admit a row if it clears the semantic threshold OR matches lexically
-            # (substring is the loosest lexical predicate, so it covers all tiers).
+            # (substring covers exact+prefix) OR clears the fuzzy cutoff.
             where += (
                 f" AND (embedding <=> ${vec_i}::vector < {threshold}"
-                f" OR id ILIKE ${sub_i} OR title ILIKE ${sub_i})"
+                f" OR id ILIKE ${sub_i} OR title ILIKE ${sub_i}"
+                f" OR {fuzzy_score} >= {fuzzy_tau})"
             )
-            # tier first, then cosine, then id ASC — a deterministic tiebreak so
-            # same-tier rows (e.g. 900+ MODIS prefix hits) don't flap on the
-            # near-flat cosine RemoteCLIP produces for short text.
-            order = f" ORDER BY match_tier ASC, embedding <=> ${vec_i}::vector ASC, id ASC"
+            # tier first; then order the FUZZY tier by word_similarity DESC
+            # (cosine is near-flat and can't rank typo hits) — gated to tier 3
+            # only so it never perturbs the semantic tier's cosine order; then
+            # cosine; then id ASC as a deterministic final tiebreak.
+            order = (
+                f" ORDER BY match_tier ASC,"
+                f" (CASE WHEN ({tier_expr}) = 3 THEN {fuzzy_score} ELSE 0 END) DESC,"
+                f" embedding <=> ${vec_i}::vector ASC, id ASC"
+            )
         else:
             # No text: pure semantic search, deterministic tiebreak on id.
             vec_i = len(args) + 1
@@ -276,7 +291,7 @@ async def get_candidate_collections(
     query += f" LIMIT ${len(args)+1}"
     args.append(limit)
 
-    _TIER_LABELS = {0: "exact", 1: "prefix", 2: "substring", 3: "semantic"}
+    _TIER_LABELS = {0: "exact", 1: "prefix", 2: "substring", 3: "fuzzy", 4: "semantic"}
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *args)
     return [
@@ -285,7 +300,9 @@ async def get_candidate_collections(
             "id": row["id"],
             "title": row["title"],
             "match_tier": _TIER_LABELS.get(row["match_tier"], "semantic"),
-            # Any lexical match (tier <= 2) is "exact" for the fan-out lane split.
+            # Literal lexical matches (exact/prefix/substring) drive the fan-out
+            # "exact" lane. Fuzzy is a softer signal, so it rides the semantic
+            # lane (still badged distinctly via match_tier).
             "is_exact": row["match_tier"] <= 2,
         }
         for row in rows

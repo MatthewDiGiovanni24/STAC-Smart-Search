@@ -28,9 +28,19 @@ CANONICAL CHOICES (the defensible-rule reasoning, committed up front):
     NOT an incidental mid-string "…_MODIS_…" reference. This is the query that
     fails at baseline (a mid-string row wins) and the tiers are meant to fix.
 
-XPASS NOTE (MODSI): if a typo query "passes", it is a SPURIOUS semantic hit — an
-unrelated collection that happened to surface — NOT typo tolerance. Do NOT read
-a green XPASS as pg_trgm coverage; the fuzzy tier is still required.
+FUZZY TIER (pg_trgm) OUTCOME, decided from measured word_similarity:
+  * "methan plume" -> PASS via the FUZZY tier. EMITL2BCH4PLM scores 0.80 (titles
+    literally say "Methane Plume Complexes"), clear of the ~0.54 noise floor.
+    The "tier" column MUST read "fuzzy" — a pass via "semantic" would be the
+    spurious-hit failure mode, not typo tolerance.
+  * "MODSI" -> STAYS xfail. The I<->S transposition drops word_similarity(MODSI,
+    MODIS) to 0.5, exactly tied with the "Model" false-positive wall — no
+    threshold separates them. Trigram cannot resolve a transposition into a
+    common word; this needs edit-distance/phonetic matching, NOT pg_trgm.
+
+XPASS NOTE (MODSI): the anchored ^MODIS pattern already rejects incidental
+semantic hits, so MODSI reports a clean xfail. If it ever XPASSes, it is a
+spurious semantic hit, NOT typo tolerance — do not read it as fuzzy coverage.
 """
 
 import asyncio
@@ -52,18 +62,22 @@ QUERIES: list[tuple[str, str, str, str]] = [
     ("sentinel-2-l2a",       r"^sentinel-2-l2a$",   "top1",  "exact id (non-CMR)"),
     ("wildfire burn severity", r"burn|fire",        "top5",  "natural language -> semantic tier"),
     ("sea ice concentration",  r"sea.?ice|ice.?conc", "top5", "natural language -> semantic tier"),
-    ("MODSI",                r"^MODIS",             "xfail", "typo of MODIS -> needs pg_trgm (see XPASS NOTE)"),
-    ("methan plume",         r"Methane Plume",      "xfail", "typo 'methan' -> needs pg_trgm"),
+    ("methan plume",         r"^EMITL2BCH4PLM",     "top1",  "typo -> fuzzy tier (must match at tier=fuzzy)"),
+    ("MODSI",                r"^MODIS",             "xfail", "typo transposition -> trigram cannot resolve"),
 ]
 
+# Queries whose passing row must be served by a specific tier (guards against a
+# green result that's actually coming from the wrong path, e.g. a semantic fluke).
+REQUIRED_TIER: dict[str, str] = {"methan plume": "fuzzy"}
 
-def _first_hit_rank(rows: list[dict], pattern: str) -> int | None:
-    """1-based rank of the first row (within top-K) whose id/title matches, else None."""
+
+def _first_hit(rows: list[dict], pattern: str) -> tuple[int | None, str | None]:
+    """(1-based rank, tier) of the first row (within top-K) whose id/title matches."""
     rx = re.compile(pattern, re.IGNORECASE)
     for i, r in enumerate(rows[:TOP_K], start=1):
         if rx.search(r.get("id") or "") or rx.search(r.get("title") or ""):
-            return i
-    return None
+            return i, r.get("match_tier")
+    return None, None
 
 
 def _tier(r: dict) -> str:
@@ -97,11 +111,17 @@ async def main() -> None:
         rows = await get_candidate_collections(
             pool=pool, text=query, search_embedding=vec, limit=TOP_K
         )
-        rank = _first_hit_rank(rows, pattern)
+        rank, hit_tier = _first_hit(rows, pattern)
         result = _judge(mode, rank)
+        # A pass at the wrong tier is a FAIL — guards against a semantic fluke
+        # masquerading as fuzzy coverage.
+        need = REQUIRED_TIER.get(query)
+        if result == "PASS" and need and hit_tier != need:
+            result = "FAIL"
         tally[result] += 1
         top1 = f"{(rows[0].get('id') if rows else '—')} ({_tier(rows[0]) if rows else '—'})"
-        print(f"{query:<24}{mode:<7}{str(rank or '-'):<6}{result:<8}{top1}")
+        via = f"  via tier={hit_tier}" if need else ""
+        print(f"{query:<24}{mode:<7}{str(rank or '-'):<6}{result:<8}{top1}{via}")
 
     print("-" * 84)
     print(

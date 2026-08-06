@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # above this threshold are filtered out. Lower = more strict, higher = more permissive. 0.0 = only exact matches, 1.0 = all items pass
     cosine_distance_threshold: float = 0.25
 
+    # pg_trgm word_similarity cutoff for the fuzzy (typo-tolerant) lexical tier,
+    # matched against collection titles. Chosen from the registry's actual
+    # distribution (true methane-plume matches ~0.73-0.80, first noise ~0.54),
+    # so 0.6 separates them. Also correctly rejects transposition noise (MODSI ~
+    # MODIS and ~"Model" both tie at 0.5, below the cutoff).
+    fuzzy_word_similarity_threshold: float = 0.6
+
     @property
     def sqlalchemy_url(self) -> str:
         """Return the DATABASE_URL in the ``postgresql+asyncpg://`` form Alembic expects."""

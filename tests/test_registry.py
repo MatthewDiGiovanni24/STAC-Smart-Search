@@ -51,7 +51,7 @@ async def test_get_candidate_collections_builds_query():
     """The pre-filter query adds spatial + temporal clauses and passes params in order."""
     mock_conn = AsyncMock()
     mock_conn.fetch.return_value = [
-        {"provider_id": 1, "id": "test-collection", "title": "Test", "match_tier": 3}
+        {"provider_id": 1, "id": "test-collection", "title": "Test", "match_tier": 4}
     ]
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
@@ -80,7 +80,7 @@ async def test_get_candidate_collections_builds_query():
     assert "min_x <=" in query
     assert "start_time <=" in query
     # No embedding/text: everything is the default semantic tier.
-    assert "3 AS match_tier" in query
+    assert "4 AS match_tier" in query
 
     # Param order: [max_x, min_x, max_y, min_y, parsed_end, parsed_start, limit]
     assert call_args[1] == 30.0                                 # search max_x
@@ -98,7 +98,7 @@ async def test_candidate_query_labels_tiers_with_the_expression_it_orders_by():
     mock_conn = AsyncMock()
     mock_conn.fetch.return_value = [
         {"provider_id": 1, "id": "sentinel-2-l2a", "title": "Sentinel-2", "match_tier": 0},
-        {"provider_id": 2, "id": "landsat-8", "title": "Landsat 8", "match_tier": 3},
+        {"provider_id": 2, "id": "landsat-8", "title": "Landsat 8", "match_tier": 4},
     ]
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
@@ -116,6 +116,7 @@ async def test_candidate_query_labels_tiers_with_the_expression_it_orders_by():
     assert "lower(id) = lower($2) OR lower(title) = lower($2) THEN 0" in query  # exact, both sides
     assert "id ILIKE $3 OR title ILIKE $3 THEN 1" in query                      # prefix
     assert "id ILIKE $4 OR title ILIKE $4 THEN 2" in query                      # substring
+    assert "word_similarity(lower($2), lower(title)) >= 0.6 THEN 3" in query    # fuzzy
     assert "ORDER BY match_tier ASC" in query and "id ASC" in query             # tier + tiebreak
     call = mock_conn.fetch.call_args[0]
     assert call[2] == "sentinel"       # $2 raw (case-insensitive equality)
