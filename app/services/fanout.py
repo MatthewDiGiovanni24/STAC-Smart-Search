@@ -46,6 +46,12 @@ EXACT = "exact"
 SEMANTIC = "semantic"
 LANES = (EXACT, SEMANTIC)
 
+# Display precedence of the fine lexical tiers (from get_candidate_collections).
+# Lower sorts first: literal matches, then fuzzy, then pure semantic. Fuzzy rides
+# the semantic *lane* budget but must still DISPLAY above pure-semantic items, so
+# the badge the UI shows matches the order the user sees.
+_TIER_RANK = {"exact": 0, "prefix": 1, "substring": 2, "fuzzy": 3, "semantic": 4}
+
 # Providers queried concurrently within one lane.
 CHUNK_SIZE = 10
 
@@ -72,17 +78,19 @@ def _lane_quotas(limit: int, has_text: bool) -> dict[str, int]:
 
 
 def _blocked_order(items: list[NormalizedSTACItem]) -> list[NormalizedSTACItem]:
-    """Order exact matches first, each block internally by relevance descending.
+    """Order by fine lexical tier, then relevance within each tier block.
 
-    Strictly blocked: the two lanes' scores are never compared. Python's sort is
-    stable, so equal keys keep arrival order. Unscored items sort last within
-    their own block — ``-relevance_score`` alone would rank ``None`` as 0.0 and
-    interleave unscored items with genuinely low-scoring ones.
+    Blocked by ``match_tier`` (exact > prefix > substring > fuzzy > semantic), so
+    tiers' scores are never compared across blocks — a strong-cosine semantic hit
+    never outranks a literal or fuzzy match, and the displayed order matches the
+    badge each item carries. Python's sort is stable, so equal keys keep arrival
+    order. Unscored items sort last within their block (``-relevance_score`` alone
+    would rank ``None`` as 0.0 and interleave them with genuinely low scores).
     """
     return sorted(
         items,
         key=lambda it: (
-            it.properties.get("match_type") != EXACT,
+            _TIER_RANK.get(it.properties.get("match_tier"), _TIER_RANK[SEMANTIC]),
             it.relevance_score is None,
             -(it.relevance_score or 0.0),
         ),

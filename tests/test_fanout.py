@@ -203,6 +203,26 @@ async def test_batch_path_applies_the_same_lane_split(monkeypatch):
     assert lanes == ["exact"] * 50 + ["semantic"] * 50
 
 
+def test_blocked_order_pins_by_fine_tier_over_relevance():
+    """Display order follows match_tier, not raw cosine — so the badge matches
+    the order. A fuzzy item outranks a higher-scoring pure-semantic one; a
+    strong-cosine semantic hit never jumps a literal or fuzzy match."""
+    def mk(cid: str, tier: str, score: float) -> NormalizedSTACItem:
+        it = NormalizedSTACItem(id=cid, collection="c", catalog_source="cmr")
+        it.properties["match_tier"] = tier
+        it.relevance_score = score
+        return it
+
+    items = [
+        mk("sem", "semantic", 0.99),    # highest cosine, weakest tier
+        mk("fuz", "fuzzy", 0.10),       # fuzzy must display above semantic
+        mk("sub", "substring", 0.05),
+        mk("exa", "exact", 0.01),       # lowest cosine, strongest tier
+    ]
+    ordered = fanout._blocked_order(items)
+    assert [it.id for it in ordered] == ["exa", "sub", "fuz", "sem"]
+
+
 @pytest.mark.asyncio
 async def test_stale_candidate_provider_is_skipped(monkeypatch):
     monkeypatch.setattr(fanout, "list_active_providers", _make_async(PROVIDERS))
