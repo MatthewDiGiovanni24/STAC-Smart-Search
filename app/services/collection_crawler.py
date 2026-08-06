@@ -92,6 +92,23 @@ def _build_text(title: Optional[str], description: Optional[str], keywords: Any 
     return text[:1000]
 
 
+def _to_upsert_row(r: dict) -> "UpsertRow":
+    """Turn a deduped crawl record into an UpsertRow tuple for the DB layer."""
+    sp = r["spatial"] or [None, None, None, None]
+    tp = r["temporal"] or [None, None]
+    return (
+        r["id"],
+        r["provider_id"],
+        r["title"],
+        r["description"],
+        sp[0], sp[1], sp[2], sp[3],
+        parse_date(tp[0]),
+        parse_date(tp[1]),
+        r["embedding_str"],
+        r["hash"],
+    )
+
+
 def _raw(provider_id: int, cid: str, title, description, spatial, temporal, keywords=None) -> dict:
     return {
         "provider_id": provider_id,
@@ -394,50 +411,42 @@ async def refresh_collection_registry(
     # Incremental embedding: only (re)embed changed-or-new descriptions.
     existing = await fetch_existing_collection_state(pool)
     to_embed: list[dict] = []
+    reused: list[dict] = []
     for r in deduped:
         text = r["text"]
         r["hash"] = hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None
         r["embedding_str"] = None
         prev = existing.get((r["provider_id"], r["id"]))
         unchanged = bool(prev and prev[0] == r["hash"] and prev[1])
-        if text and not unchanged:
-            to_embed.append(r)
+        (reused if (unchanged or not text) else to_embed).append(r)
 
+    # Unchanged rows: refresh metadata only. Their embedding_str is None, and the
+    # upsert COALESCEs it, so the existing vector is preserved (never wiped).
+    if reused:
+        await upsert_collections(pool, [_to_upsert_row(r) for r in reused])
+
+    # Embed AND commit chunk-by-chunk. A crash mid-run keeps every chunk already
+    # written; the hash guard makes a re-run skip them, so no work is redone and
+    # nothing is lost (vs. one final commit that loses everything on failure).
     embedded = 0
     for start in range(0, len(to_embed), _EMBED_CHUNK):
         chunk = to_embed[start : start + _EMBED_CHUNK]
         vectors = await asyncio.to_thread(embed_texts, [r["text"] for r in chunk])
         for r, vec in zip(chunk, vectors):
             r["embedding_str"] = to_vector_literal(vec)
+        await upsert_collections(pool, [_to_upsert_row(r) for r in chunk])
         embedded += len(chunk)
-        logger.info("embedded %d/%d collection descriptions", embedded, len(to_embed))
-
-    rows: list[UpsertRow] = []
-    for r in deduped:
-        sp = r["spatial"] or [None, None, None, None]
-        tp = r["temporal"] or [None, None]
-        rows.append(
-            (
-                r["id"],
-                r["provider_id"],
-                r["title"],
-                r["description"],
-                sp[0], sp[1], sp[2], sp[3],
-                parse_date(tp[0]),
-                parse_date(tp[1]),
-                r["embedding_str"],
-                r["hash"],
-            )
+        logger.info(
+            "embedded+committed %d/%d collections (%d reused)", embedded, len(to_embed), len(reused)
         )
-    upserted = await upsert_collections(pool, rows)
 
     summary = {
         "providers": len(providers),
         "collections_seen": len(deduped),
         "embedded": embedded,
-        "reused": len(deduped) - len(to_embed),
+        "reused": len(reused),
         "cmr_unmapped_skipped": cmr_skipped,
-        "upserted": upserted,
+        "upserted": len(reused) + embedded,
     }
     logger.info("collection registry refresh complete: %s", summary)
     return summary

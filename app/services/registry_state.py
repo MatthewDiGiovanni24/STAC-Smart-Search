@@ -23,7 +23,7 @@ import asyncpg
 from app.config import get_settings
 from app.schemas.collection import RegistryStatus
 from app.services.collection_crawler import refresh_collection_registry
-from app.services.registry import count_collections, latest_crawl_time
+from app.services.registry import count_cmr_collections, count_collections, latest_crawl_time
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +66,19 @@ def phase() -> str:
 
 
 async def get_registry_status(pool: asyncpg.Pool) -> RegistryStatus:
-    """Combine the in-process phase with authoritative DB counts."""
+    """Combine the in-process phase with authoritative, LIVE DB counts.
+
+    The counts are queried on every call (never cached at startup) so a caller
+    polling ``/ready`` watches ``cmr_indexed`` climb during a background crawl.
+    """
     total, embedded = await count_collections(pool)
+    cmr_indexed = await count_cmr_collections(pool)
     return RegistryStatus(
         ready=embedded > 0,
         phase=_tracker.phase,
         collections_indexed=total,
         collections_embedded=embedded,
+        cmr_indexed=cmr_indexed,
         error=_tracker.error,
         last_refresh=_tracker.finished_at.isoformat() if _tracker.finished_at else None,
     )

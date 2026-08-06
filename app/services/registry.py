@@ -159,6 +159,21 @@ async def count_collections(pool: asyncpg.Pool) -> Tuple[int, int]:
     return int(total), int(embedded)
 
 
+async def count_cmr_collections(pool: asyncpg.Pool) -> int:
+    """Return the live count of collections owned by a CMR provider.
+
+    Joins to ``providers.source`` so ``/ready`` can show CMR filling in
+    specifically (the crawl's long pole), not just the overall total.
+    """
+    query = """
+        SELECT count(*) FROM collections c
+        JOIN providers p ON p.id = c.provider_id
+        WHERE p.source = 'cmr';
+    """
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(query))
+
+
 async def latest_crawl_time(pool: asyncpg.Pool) -> Optional[datetime]:
     """Return the most recent ``last_crawled_at`` across all collections, or None."""
     async with pool.acquire() as conn:
