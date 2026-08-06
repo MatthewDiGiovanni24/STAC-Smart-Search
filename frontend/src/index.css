@@ -211,12 +211,21 @@ body {
 .badge--earth_search { background: var(--earth); }
 
 .card__tags { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
-/* Factual label, not a score: outlined accent pill, distinct from source badges. */
-.badge--exact {
+/* Factual lexical-tier labels, not scores: outlined pills, distinct from source
+   badges and graded so exact > prefix > substring read at a glance. */
+.badge--tier { text-transform: none; background: transparent; }
+.badge--tier-exact {
   background: var(--accent-weak);
   color: var(--accent);
   border: 1px solid var(--accent);
-  text-transform: none;
+}
+.badge--tier-prefix {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.badge--tier-substring {
+  color: var(--text-dim);
+  border: 1px solid var(--border);
 }
 
 .score-bar { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-bottom: 0.7rem; }

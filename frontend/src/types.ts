@@ -21,7 +21,11 @@ export interface Item {
   properties?: {
     title?: string;
     description?: string;
+    // Coarse lane (kept for backward compatibility).
     match_type?: 'exact' | 'semantic';
+    is_exact?: boolean;
+    // Fine lexical tier assigned by the SQL.
+    match_tier?: 'exact' | 'prefix' | 'substring' | 'semantic';
   };
 }
 

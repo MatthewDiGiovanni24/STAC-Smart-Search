@@ -103,11 +103,13 @@ def _parse_interval(datetime_str: str | None) -> tuple[str | None, str | None]:
 
 async def _prepare_work(
     request: STACSearchRequest, pool: asyncpg.Pool
-) -> tuple[list[WorkItem], list[float] | None]:
+) -> tuple[list[WorkItem], list[float] | None, dict[str, str]]:
     """Embed the query, shortlist collections, and build lane-tagged work.
 
-    Returns ``(work, search_vector)``. Each work item is scoped to its lane's
-    quota, so no single provider can consume more than its lane is entitled to.
+    Returns ``(work, search_vector, tier_by_collection)``. Each work item is
+    scoped to its lane's quota; ``tier_by_collection`` maps a collection id to
+    its fine lexical tier (exact/prefix/substring/semantic) so items can be
+    tagged with the tier the SQL actually assigned, not just the coarse lane.
     """
     start_time, end_time = _parse_interval(request.datetime)
     search_vector = await asyncio.to_thread(embed_query, request.text) if request.text else None
@@ -122,6 +124,7 @@ async def _prepare_work(
         search_embedding=search_vector,
         limit=get_settings().candidate_limit,
     )
+    tier_by_collection = {c["id"]: c.get("match_tier", SEMANTIC) for c in candidates}
 
     providers = await list_active_providers(pool)
     provider_lookup = {p["id"]: p for p in providers}
@@ -144,7 +147,7 @@ async def _prepare_work(
 
     if not request.text:
         # No text means no lexical lane; everything draws on the semantic budget.
-        return _build(SEMANTIC, candidates), search_vector
+        return _build(SEMANTIC, candidates), search_vector, tier_by_collection
 
     # The exact/semantic split is decided in SQL (see get_candidate_collections)
     # so the label always agrees with the ordering the query itself applied.
@@ -158,7 +161,19 @@ async def _prepare_work(
     # capped here — their item budget bounds them.
     semantic_colls = semantic_colls[: max(1, quotas[SEMANTIC])]
 
-    return _build(EXACT, exact_colls) + _build(SEMANTIC, semantic_colls), search_vector
+    return _build(EXACT, exact_colls) + _build(SEMANTIC, semantic_colls), search_vector, tier_by_collection
+
+
+def _tag_item(item: NormalizedSTACItem, lane: str, tier_by_collection: dict[str, str]) -> None:
+    """Stamp lane + fine tier onto an item's properties.
+
+    Keeps the coarse ``match_type`` (exact/semantic) and ``is_exact`` on the wire
+    for backward compatibility, and adds the fine ``match_tier``
+    (exact/prefix/substring/semantic) the SQL assigned to the item's collection.
+    """
+    item.properties["match_type"] = lane
+    item.properties["is_exact"] = lane == EXACT
+    item.properties["match_tier"] = tier_by_collection.get(item.collection or "", lane)
 
 
 def _apply_lane_quotas(
@@ -188,7 +203,7 @@ def _apply_lane_quotas(
 async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACSearchResponse:
     """Batch path: query all shortlisted providers, rank within each lane."""
     start = time.perf_counter()
-    work, search_vector = await _prepare_work(request, pool)
+    work, search_vector, tier_by_collection = await _prepare_work(request, pool)
 
     results = await asyncio.gather(
         *(w.adapter.search(w.request) for w in work),
@@ -211,7 +226,7 @@ async def fanout_search(request: STACSearchRequest, pool: asyncpg.Pool) -> STACS
             sources[key] = "ok"
             if request.text:
                 for item in result:
-                    item.properties["match_type"] = w.lane
+                    _tag_item(item, w.lane, tier_by_collection)
             items.extend(result)
 
     items = await enrich_items_with_collection_context(pool, items)
@@ -295,7 +310,7 @@ async def stream_search(
     """
     start = time.perf_counter()
     settings = get_settings()
-    work, search_vector = await _prepare_work(request, pool)
+    work, search_vector, tier_by_collection = await _prepare_work(request, pool)
     do_rank = settings.ranking_enabled and search_vector is not None
 
     quotas = _lane_quotas(request.limit, bool(request.text))
@@ -335,7 +350,7 @@ async def stream_search(
 
             for item in batch:
                 if request.text:
-                    item.properties["match_type"] = w.lane
+                    _tag_item(item, w.lane, tier_by_collection)
                 if len(all_items) >= request.limit:
                     break
                 if counts[w.lane] < quotas[w.lane]:
