@@ -51,7 +51,7 @@ async def test_get_candidate_collections_builds_query():
     """The pre-filter query adds spatial + temporal clauses and passes params in order."""
     mock_conn = AsyncMock()
     mock_conn.fetch.return_value = [
-        {"provider_id": 1, "id": "test-collection", "title": "Test", "is_exact": False}
+        {"provider_id": 1, "id": "test-collection", "title": "Test", "match_tier": 3}
     ]
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
@@ -64,7 +64,13 @@ async def test_get_candidate_collections_builds_query():
     )
 
     assert result == [
-        {"provider_id": 1, "id": "test-collection", "title": "Test", "is_exact": False}
+        {
+            "provider_id": 1,
+            "id": "test-collection",
+            "title": "Test",
+            "match_tier": "semantic",
+            "is_exact": False,
+        }
     ]
 
     mock_conn.fetch.assert_called_once()
@@ -73,8 +79,8 @@ async def test_get_candidate_collections_builds_query():
 
     assert "min_x <=" in query
     assert "start_time <=" in query
-    # No embedding/text: nothing can be a lexical match.
-    assert "false AS is_exact" in query
+    # No embedding/text: everything is the default semantic tier.
+    assert "3 AS match_tier" in query
 
     # Param order: [max_x, min_x, max_y, min_y, parsed_end, parsed_start, limit]
     assert call_args[1] == 30.0                                 # search max_x
@@ -86,13 +92,13 @@ async def test_get_candidate_collections_builds_query():
 
 
 @pytest.mark.asyncio
-async def test_candidate_query_labels_exact_matches_with_the_expression_it_orders_by():
-    """``is_exact`` comes back from SQL, computed by the same lexical expression
-    that admits and orders the row — callers must not re-derive it."""
+async def test_candidate_query_labels_tiers_with_the_expression_it_orders_by():
+    """``match_tier``/``is_exact`` come back from SQL, computed by the same tier
+    CASE that admits and orders the row — callers must not re-derive them."""
     mock_conn = AsyncMock()
     mock_conn.fetch.return_value = [
-        {"provider_id": 1, "id": "sentinel-2-l2a", "title": "Sentinel-2", "is_exact": True},
-        {"provider_id": 2, "id": "landsat-8", "title": "Landsat 8", "is_exact": False},
+        {"provider_id": 1, "id": "sentinel-2-l2a", "title": "Sentinel-2", "match_tier": 0},
+        {"provider_id": 2, "id": "landsat-8", "title": "Landsat 8", "match_tier": 3},
     ]
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
@@ -101,13 +107,17 @@ async def test_candidate_query_labels_exact_matches_with_the_expression_it_order
         pool=mock_pool, text="sentinel", search_embedding=[0.1, 0.2, 0.3]
     )
 
-    assert [r["is_exact"] for r in result] == [True, False]
+    assert [r["match_tier"] for r in result] == ["exact", "semantic"]
+    assert [r["is_exact"] for r in result] == [True, False]  # tier <= 2
     assert result[0]["title"] == "Sentinel-2"
 
     query = mock_conn.fetch.call_args[0][0]
-    # No bbox/temporal here, so the vector is $1 and the text pattern is $2.
-    exact_expr = "(id ILIKE $2 OR title ILIKE $2)"
-    assert f"{exact_expr} AS is_exact" in query      # labels
-    assert f"OR {exact_expr}" in query               # admits
-    assert f"ORDER BY {exact_expr} DESC" in query    # orders
-    assert mock_conn.fetch.call_args[0][2] == "%sentinel%"
+    # No bbox/temporal: vector=$1, raw text=$2, prefix=$3, substring=$4.
+    assert "lower(id) = lower($2) OR lower(title) = lower($2) THEN 0" in query  # exact, both sides
+    assert "id ILIKE $3 OR title ILIKE $3 THEN 1" in query                      # prefix
+    assert "id ILIKE $4 OR title ILIKE $4 THEN 2" in query                      # substring
+    assert "ORDER BY match_tier ASC" in query and "id ASC" in query             # tier + tiebreak
+    call = mock_conn.fetch.call_args[0]
+    assert call[2] == "sentinel"       # $2 raw (case-insensitive equality)
+    assert call[3] == "sentinel%"      # $3 prefix
+    assert call[4] == "%sentinel%"     # $4 substring

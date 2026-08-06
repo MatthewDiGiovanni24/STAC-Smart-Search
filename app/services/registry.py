@@ -201,8 +201,8 @@ async def get_candidate_collections(
     """
     where = " WHERE true"
     order = ""
-    # No text (or no embedding) means there is no lexical match to speak of.
-    exact_select = "false AS is_exact"
+    # Default tier is 3 (semantic): no text means no lexical match to speak of.
+    tier_select = "3 AS match_tier"
     args: List[Any] = []
 
     # Spatial overlap: collection box intersects the search box.
@@ -232,32 +232,51 @@ async def get_candidate_collections(
         threshold = get_settings().cosine_distance_threshold
 
         if text:
-            vector_idx = len(args) + 1
-            text_idx = len(args) + 2
-
-            # One expression, used three ways: to admit lexical matches that miss
-            # the AI threshold, to sort them first, and to label them for the
-            # caller. Callers must not re-derive this.
-            exact_expr = f"(id ILIKE ${text_idx} OR title ILIKE ${text_idx})"
-            exact_select = f"{exact_expr} AS is_exact"
-
-            where += f" AND (embedding <=> ${vector_idx}::vector < {threshold} OR {exact_expr})"
-            order = f" ORDER BY {exact_expr} DESC, embedding <=> ${vector_idx}::vector ASC"
-
+            vec_i = len(args) + 1
             args.append(to_vector_literal(search_embedding))
-            args.append(f"%{text}%")
+            q_i = len(args) + 1
+            args.append(text)             # raw, for case-insensitive equality
+            pre_i = len(args) + 1
+            args.append(f"{text}%")       # prefix
+            sub_i = len(args) + 1
+            args.append(f"%{text}%")      # substring (subsumes prefix + exact)
+
+            # Lexical tiers, decided in SQL so the label always agrees with the
+            # order the query applied. Exact is case-insensitive on BOTH sides
+            # (lower()=lower(), not ILIKE, so '_'/'%' in a pasted id aren't
+            # treated as wildcards). Tier order: exact(0) > prefix(1) >
+            # substring(2) > semantic(3).
+            tier_expr = (
+                f"CASE "
+                f"WHEN lower(id) = lower(${q_i}) OR lower(title) = lower(${q_i}) THEN 0 "
+                f"WHEN id ILIKE ${pre_i} OR title ILIKE ${pre_i} THEN 1 "
+                f"WHEN id ILIKE ${sub_i} OR title ILIKE ${sub_i} THEN 2 "
+                f"ELSE 3 END"
+            )
+            tier_select = f"{tier_expr} AS match_tier"
+
+            # Admit a row if it clears the semantic threshold OR matches lexically
+            # (substring is the loosest lexical predicate, so it covers all tiers).
+            where += (
+                f" AND (embedding <=> ${vec_i}::vector < {threshold}"
+                f" OR id ILIKE ${sub_i} OR title ILIKE ${sub_i})"
+            )
+            # tier first, then cosine, then id ASC — a deterministic tiebreak so
+            # same-tier rows (e.g. 900+ MODIS prefix hits) don't flap on the
+            # near-flat cosine RemoteCLIP produces for short text.
+            order = f" ORDER BY match_tier ASC, embedding <=> ${vec_i}::vector ASC, id ASC"
         else:
-            # Fallback to pure semantic search if no text was typed
-            vector_idx = len(args) + 1
-            where += f" AND embedding <=> ${vector_idx}::vector < {threshold}"
-            order = f" ORDER BY embedding <=> ${vector_idx}::vector ASC"
-
+            # No text: pure semantic search, deterministic tiebreak on id.
+            vec_i = len(args) + 1
             args.append(to_vector_literal(search_embedding))
+            where += f" AND embedding <=> ${vec_i}::vector < {threshold}"
+            order = f" ORDER BY embedding <=> ${vec_i}::vector ASC, id ASC"
 
-    query = f"SELECT provider_id, id, title, {exact_select} FROM collections{where}{order}"
+    query = f"SELECT provider_id, id, title, {tier_select} FROM collections{where}{order}"
     query += f" LIMIT ${len(args)+1}"
     args.append(limit)
 
+    _TIER_LABELS = {0: "exact", 1: "prefix", 2: "substring", 3: "semantic"}
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *args)
     return [
@@ -265,7 +284,9 @@ async def get_candidate_collections(
             "provider_id": row["provider_id"],
             "id": row["id"],
             "title": row["title"],
-            "is_exact": bool(row["is_exact"]),
+            "match_tier": _TIER_LABELS.get(row["match_tier"], "semantic"),
+            # Any lexical match (tier <= 2) is "exact" for the fan-out lane split.
+            "is_exact": row["match_tier"] <= 2,
         }
         for row in rows
     ]
