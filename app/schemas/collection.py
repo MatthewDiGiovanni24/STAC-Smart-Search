@@ -13,6 +13,7 @@ class RegistryStatus(BaseModel):
     phase: str                       # idle | warming | ready | error
     collections_indexed: int         # rows in the collections table
     collections_embedded: int        # rows with an embedding
+    cmr_indexed: int                 # rows owned by a CMR provider (live count)
     error: Optional[str] = None      # last crawl error, if any
     last_refresh: Optional[str] = None  # ISO timestamp of last completed refresh
 

@@ -29,6 +29,32 @@ logger = logging.getLogger(__name__)
 # column dimension (see the resize_embedding_to_512 migration).
 EMBEDDING_DIM = 512
 
+# A healthy RemoteCLIP load leaves 0 missing keys; a wrong checkpoint/model
+# leaves ~all of them missing. Refuse to serve if more than this fraction of the
+# model's parameters weren't loaded (see _check_state_dict_applied).
+_MAX_MISSING_FRACTION = 0.05
+
+# NOTE ON SCORE FLATNESS: RemoteCLIP's *text* encoder is anisotropic — unrelated
+# short strings sit ~0.76-0.80 cosine apart. Flat similarity scores across
+# distinct collections are therefore expected from a correctly-loaded model, NOT
+# a sign of untrained weights. Ranking discrimination for short queries comes
+# from the lexical path, not from spreading these cosines.
+
+
+def _check_state_dict_applied(n_missing: int, n_total: int) -> None:
+    """Raise if the checkpoint applied to too few of the model's parameters.
+
+    ``load_state_dict(strict=False)`` silently tolerates a total key mismatch,
+    leaving the randomly-initialized weights in place — an untrained encoder
+    would then serve traffic. This turns that silent failure into a loud one.
+    """
+    if n_total and n_missing > _MAX_MISSING_FRACTION * n_total:
+        raise RuntimeError(
+            f"RemoteCLIP checkpoint applied to only {n_total - n_missing}/{n_total} "
+            f"model parameters ({n_missing} missing) — checkpoint/model mismatch; "
+            "refusing to serve randomly-initialized weights."
+        )
+
 # Lazily-initialized singleton + a lock so a race during first use can't build
 # the model twice.
 _embedder: "RemoteCLIPEmbedder | None" = None
@@ -63,9 +89,13 @@ class RemoteCLIPEmbedder:
         ckpt_path = hf_hub_download(
             repo_id=settings.remoteclip_repo,
             filename=settings.remoteclip_checkpoint,
+            token=settings.hf_token,  # None = anonymous (rate-limited)
         )
         state_dict = torch.load(ckpt_path, map_location="cpu")
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        # Fail loudly if the checkpoint didn't actually apply (would leave the
+        # random init in place under strict=False).
+        _check_state_dict_applied(len(missing), len(model.state_dict()))
         if missing or unexpected:
             # RemoteCLIP checkpoints are plain state dicts; a few non-weight keys
             # (e.g. logit_scale/position_ids) may differ. Log but don't fail.

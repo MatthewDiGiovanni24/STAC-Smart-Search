@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     embedding_device: str = "auto"
     # Batch size for encoding many collection descriptions at once.
     embedding_batch_size: int = 64
+    # Optional HuggingFace token for the checkpoint download. Anonymous downloads
+    # are rate-limited (429), which fails a cold start; set HF_TOKEN to de-risk it.
+    # None = anonymous.
+    hf_token: str | None = None
 
     # --- Collection registry / startup crawl ------------------------------
     # Whether the startup lifespan kicks off a background registry crawl.
@@ -62,6 +66,13 @@ class Settings(BaseSettings):
     # Cosine distance threshold for semantic reranking. Items with a distance
     # above this threshold are filtered out. Lower = more strict, higher = more permissive. 0.0 = only exact matches, 1.0 = all items pass
     cosine_distance_threshold: float = 0.25
+
+    # pg_trgm word_similarity cutoff for the fuzzy (typo-tolerant) lexical tier,
+    # matched against collection titles. Chosen from the registry's actual
+    # distribution (true methane-plume matches ~0.73-0.80, first noise ~0.54),
+    # so 0.6 separates them. Also correctly rejects transposition noise (MODSI ~
+    # MODIS and ~"Model" both tie at 0.5, below the cutoff).
+    fuzzy_word_similarity_threshold: float = 0.6
 
     @property
     def sqlalchemy_url(self) -> str:

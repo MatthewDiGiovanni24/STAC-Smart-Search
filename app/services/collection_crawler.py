@@ -92,6 +92,23 @@ def _build_text(title: Optional[str], description: Optional[str], keywords: Any 
     return text[:1000]
 
 
+def _to_upsert_row(r: dict) -> "UpsertRow":
+    """Turn a deduped crawl record into an UpsertRow tuple for the DB layer."""
+    sp = r["spatial"] or [None, None, None, None]
+    tp = r["temporal"] or [None, None]
+    return (
+        r["id"],
+        r["provider_id"],
+        r["title"],
+        r["description"],
+        sp[0], sp[1], sp[2], sp[3],
+        parse_date(tp[0]),
+        parse_date(tp[1]),
+        r["embedding_str"],
+        r["hash"],
+    )
+
+
 def _raw(provider_id: int, cid: str, title, description, spatial, temporal, keywords=None) -> dict:
     return {
         "provider_id": provider_id,
@@ -267,30 +284,52 @@ def _cmr_item_to_raw(item: dict, provider_map: dict[str, int]) -> Optional[dict]
     )
 
 
+def _search_after_bytes(resp: httpx.Response) -> Optional[bytes]:
+    """Return the raw ``CMR-Search-After`` cursor as bytes, or None.
+
+    The cursor encodes the last collection's sort values and can contain
+    non-ASCII characters (e.g. an accented EntryTitle). httpx ASCII-encodes
+    *str* request-header values, so feeding the cursor back as a str crashes in
+    ``_normalize_header_value`` with UnicodeEncodeError. Reading the raw response
+    bytes and sending them back verbatim (httpx passes bytes header values
+    through unencoded) round-trips any cursor safely.
+    """
+    for name, value in resp.headers.raw:
+        if name.lower() == b"cmr-search-after":
+            return value
+    return None
+
+
 async def crawl_cmr_native(
     client: httpx.AsyncClient, provider_map: dict[str, int], max_collections: Optional[int] = None
 ) -> tuple[list[dict], int]:
     """Crawl all CMR collections via the native umm_json API + search-after.
 
     Returns (rows, skipped) where ``skipped`` counts collections whose CMR
-    provider isn't a registered STAC child (can't be routed, so excluded).
+    provider isn't a registered STAC child (can't be routed, so excluded). On an
+    unexpected page failure the crawl stops early and returns what it has, rather
+    than losing every page collected so far.
     """
     settings = get_settings()
     out: list[dict] = []
     skipped = 0
-    search_after: Optional[str] = None
+    search_after: Optional[bytes] = None  # raw cursor bytes; sent back verbatim
     pages = 0
     while pages < 2000:
-        headers = {"Accept": "application/json"}
+        headers: dict[str, Any] = {"Accept": "application/json"}
         if search_after:
-            headers["CMR-Search-After"] = search_after
-        resp = await _get_with_retry(
-            client,
-            CMR_UMM_URL,
-            params={"page_size": 2000},
-            headers=headers,
-            timeout=settings.discovery_timeout_seconds,
-        )
+            headers["CMR-Search-After"] = search_after  # bytes: httpx sends unencoded
+        try:
+            resp = await _get_with_retry(
+                client,
+                CMR_UMM_URL,
+                params={"page_size": 2000},
+                headers=headers,
+                timeout=settings.discovery_timeout_seconds,
+            )
+        except Exception:  # noqa: BLE001 - keep the pages already collected
+            logger.exception("CMR crawl stopped early at page %d; keeping %d collected", pages, len(out))
+            break
         items = resp.json().get("items", [])
         if not items:
             break
@@ -303,7 +342,7 @@ async def crawl_cmr_native(
             if max_collections and len(out) >= max_collections:
                 return out, skipped
         pages += 1
-        search_after = resp.headers.get("CMR-Search-After")
+        search_after = _search_after_bytes(resp)
         if not search_after:
             break
     return out, skipped
@@ -334,9 +373,17 @@ async def refresh_collection_registry(
     crawl_timeout = max(60, settings.discovery_timeout_seconds)
     async with httpx.AsyncClient(timeout=crawl_timeout, follow_redirects=True) as client:
         if cmr_map:
-            cmr_rows, cmr_skipped = await crawl_cmr_native(client, cmr_map, max_cmr_collections)
-            raws.extend(cmr_rows)
-            logger.info("CMR native crawl: %d collections (%d unmapped skipped)", len(cmr_rows), cmr_skipped)
+            # Isolate the CMR crawl: a failure here must not abort the whole
+            # refresh and take the other catalogs (and any partial data) down
+            # with it — the non-CMR crawls below already degrade per-provider.
+            try:
+                cmr_rows, cmr_skipped = await crawl_cmr_native(client, cmr_map, max_cmr_collections)
+                raws.extend(cmr_rows)
+                logger.info(
+                    "CMR native crawl: %d collections (%d unmapped skipped)", len(cmr_rows), cmr_skipped
+                )
+            except Exception:  # noqa: BLE001 - one catalog must not zero the registry
+                logger.exception("CMR native crawl failed; continuing with other catalogs")
 
         results = await asyncio.gather(
             *(crawl_stac_collections(client, p, per_provider_limit) for p in non_cmr),
@@ -364,50 +411,42 @@ async def refresh_collection_registry(
     # Incremental embedding: only (re)embed changed-or-new descriptions.
     existing = await fetch_existing_collection_state(pool)
     to_embed: list[dict] = []
+    reused: list[dict] = []
     for r in deduped:
         text = r["text"]
         r["hash"] = hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None
         r["embedding_str"] = None
         prev = existing.get((r["provider_id"], r["id"]))
         unchanged = bool(prev and prev[0] == r["hash"] and prev[1])
-        if text and not unchanged:
-            to_embed.append(r)
+        (reused if (unchanged or not text) else to_embed).append(r)
 
+    # Unchanged rows: refresh metadata only. Their embedding_str is None, and the
+    # upsert COALESCEs it, so the existing vector is preserved (never wiped).
+    if reused:
+        await upsert_collections(pool, [_to_upsert_row(r) for r in reused])
+
+    # Embed AND commit chunk-by-chunk. A crash mid-run keeps every chunk already
+    # written; the hash guard makes a re-run skip them, so no work is redone and
+    # nothing is lost (vs. one final commit that loses everything on failure).
     embedded = 0
     for start in range(0, len(to_embed), _EMBED_CHUNK):
         chunk = to_embed[start : start + _EMBED_CHUNK]
         vectors = await asyncio.to_thread(embed_texts, [r["text"] for r in chunk])
         for r, vec in zip(chunk, vectors):
             r["embedding_str"] = to_vector_literal(vec)
+        await upsert_collections(pool, [_to_upsert_row(r) for r in chunk])
         embedded += len(chunk)
-        logger.info("embedded %d/%d collection descriptions", embedded, len(to_embed))
-
-    rows: list[UpsertRow] = []
-    for r in deduped:
-        sp = r["spatial"] or [None, None, None, None]
-        tp = r["temporal"] or [None, None]
-        rows.append(
-            (
-                r["id"],
-                r["provider_id"],
-                r["title"],
-                r["description"],
-                sp[0], sp[1], sp[2], sp[3],
-                parse_date(tp[0]),
-                parse_date(tp[1]),
-                r["embedding_str"],
-                r["hash"],
-            )
+        logger.info(
+            "embedded+committed %d/%d collections (%d reused)", embedded, len(to_embed), len(reused)
         )
-    upserted = await upsert_collections(pool, rows)
 
     summary = {
         "providers": len(providers),
         "collections_seen": len(deduped),
         "embedded": embedded,
-        "reused": len(deduped) - len(to_embed),
+        "reused": len(reused),
         "cmr_unmapped_skipped": cmr_skipped,
-        "upserted": upserted,
+        "upserted": len(reused) + embedded,
     }
     logger.info("collection registry refresh complete: %s", summary)
     return summary

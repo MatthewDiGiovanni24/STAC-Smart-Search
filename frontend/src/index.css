@@ -210,6 +210,24 @@ body {
 .badge--planetary_computer { background: var(--pc); }
 .badge--earth_search { background: var(--earth); }
 
+.card__tags { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+/* Factual lexical-tier labels, not scores: outlined pills, distinct from source
+   badges and graded so exact > prefix > substring read at a glance. */
+.badge--tier { text-transform: none; background: transparent; }
+.badge--tier-exact {
+  background: var(--accent-weak);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.badge--tier-prefix {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.badge--tier-substring {
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
 .score-bar { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-bottom: 0.7rem; }
 .score-bar__fill { height: 100%; background: linear-gradient(90deg, var(--accent-weak), var(--accent)); transition: width 0.4s ease; }
 

@@ -42,6 +42,10 @@ async def _identity_rank(pool, items, query_vector):
     return items
 
 
+async def _identity_enrich(pool, items):
+    return items
+
+
 @pytest.fixture(autouse=True)
 def _patch(monkeypatch):
     _FakeAdapter.registry.clear()
@@ -53,6 +57,8 @@ def _patch(monkeypatch):
     monkeypatch.setattr(fanout, "embed_query", lambda text: [0.0] * 512)
     # These tests cover orchestration, not ranking; keep rank a passthrough.
     monkeypatch.setattr(fanout, "rank_items", _identity_rank)
+    # Collection context needs a real DB; orchestration doesn't depend on it.
+    monkeypatch.setattr(fanout, "enrich_items_with_collection_context", _identity_enrich)
 
 
 def _make_async(return_value):
@@ -172,6 +178,49 @@ async def test_ranking_applied_then_truncated_to_limit(monkeypatch):
     assert called["vector"] is not None                 # ranking received the query vector
     assert [it.id for it in resp.items] == ["c", "b"]    # reranked order, then truncated to 2
     assert resp.total == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_path_applies_the_same_lane_split(monkeypatch):
+    """The batch path must not disagree with the stream about lane budgets."""
+    monkeypatch.setattr(fanout, "list_active_providers", _make_async(PROVIDERS))
+    monkeypatch.setattr(fanout, "get_candidate_collections", _make_async([
+        {"provider_id": 1, "id": "SENTINEL_A", "title": "SENTINEL_A", "is_exact": True},
+        {"provider_id": 2, "id": "SENTINEL_B", "title": "SENTINEL_B", "is_exact": True},
+        {"provider_id": 3, "id": "OTHER", "title": "OTHER", "is_exact": False},
+    ]))
+    _FakeAdapter.behavior["https://cmr/stac/LPCLOUD"] = ("items", [_item(f"ea-{i}", "cmr") for i in range(75)])
+    _FakeAdapter.behavior["https://cmr/stac/POCLOUD"] = ("items", [_item(f"eb-{i}", "cmr") for i in range(75)])
+    _FakeAdapter.behavior["https://es/v1"] = ("items", [_item(f"sem-{i}", "earth_search") for i in range(75)])
+
+    resp = await fanout.fanout_search(_req(text="sentinel", limit=100), pool=object())
+
+    lanes = [it.properties["match_type"] for it in resp.items]
+    assert lanes.count("exact") == 50
+    assert lanes.count("semantic") == 50
+    assert resp.total == 100
+    # Blocked ordering: the whole exact block precedes the semantic block.
+    assert lanes == ["exact"] * 50 + ["semantic"] * 50
+
+
+def test_blocked_order_pins_by_fine_tier_over_relevance():
+    """Display order follows match_tier, not raw cosine — so the badge matches
+    the order. A fuzzy item outranks a higher-scoring pure-semantic one; a
+    strong-cosine semantic hit never jumps a literal or fuzzy match."""
+    def mk(cid: str, tier: str, score: float) -> NormalizedSTACItem:
+        it = NormalizedSTACItem(id=cid, collection="c", catalog_source="cmr")
+        it.properties["match_tier"] = tier
+        it.relevance_score = score
+        return it
+
+    items = [
+        mk("sem", "semantic", 0.99),    # highest cosine, weakest tier
+        mk("fuz", "fuzzy", 0.10),       # fuzzy must display above semantic
+        mk("sub", "substring", 0.05),
+        mk("exa", "exact", 0.01),       # lowest cosine, strongest tier
+    ]
+    ordered = fanout._blocked_order(items)
+    assert [it.id for it in ordered] == ["exa", "sub", "fuz", "sem"]
 
 
 @pytest.mark.asyncio

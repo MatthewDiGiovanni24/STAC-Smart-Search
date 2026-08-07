@@ -159,6 +159,21 @@ async def count_collections(pool: asyncpg.Pool) -> Tuple[int, int]:
     return int(total), int(embedded)
 
 
+async def count_cmr_collections(pool: asyncpg.Pool) -> int:
+    """Return the live count of collections owned by a CMR provider.
+
+    Joins to ``providers.source`` so ``/ready`` can show CMR filling in
+    specifically (the crawl's long pole), not just the overall total.
+    """
+    query = """
+        SELECT count(*) FROM collections c
+        JOIN providers p ON p.id = c.provider_id
+        WHERE p.source = 'cmr';
+    """
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(query))
+
+
 async def latest_crawl_time(pool: asyncpg.Pool) -> Optional[datetime]:
     """Return the most recent ``last_crawled_at`` across all collections, or None."""
     async with pool.acquire() as conn:
@@ -167,6 +182,7 @@ async def latest_crawl_time(pool: asyncpg.Pool) -> Optional[datetime]:
 
 async def get_candidate_collections(
     pool: Any,
+    text: Optional[str] = None,
     bbox: Optional[List[float]] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
@@ -178,14 +194,21 @@ async def get_candidate_collections(
     Applies a bbox AABB-overlap filter and a temporal-interval-overlap filter
     (NULL extents are treated as "unknown" and always pass), then — when a query
     embedding is supplied — orders by cosine distance and takes the top ``limit``.
+
+    Each row carries ``is_exact``, computed by the same lexical expression the
+    ``ORDER BY`` sorts on, so callers never re-derive the exact/semantic split
+    from a different set of columns than the query itself used.
     """
-    query = "SELECT provider_id, id FROM collections WHERE true"
+    where = " WHERE true"
+    order = ""
+    # Default tier is 4 (semantic): no text means no lexical/fuzzy match.
+    tier_select = "4 AS match_tier"
     args: List[Any] = []
 
     # Spatial overlap: collection box intersects the search box.
     if bbox and len(bbox) == 4:
         search_min_x, search_min_y, search_max_x, search_max_y = bbox
-        query += f"""
+        where += f"""
             AND (
                 min_x IS NULL OR
                 (min_x <= ${len(args)+1} AND max_x >= ${len(args)+2} AND
@@ -198,21 +221,89 @@ async def get_candidate_collections(
     if start_time and end_time:
         parsed_start = parse_date(start_time)
         parsed_end = parse_date(end_time)
-        query += f"""
+        where += f"""
             AND (start_time IS NULL OR start_time <= ${len(args)+1}::timestamptz)
             AND (end_time IS NULL OR end_time >= ${len(args)+2}::timestamptz)
         """
         args.extend([parsed_end, parsed_start])
 
-    # Semantic ranking (cosine distance ascending == most similar first).
+    # Semantic & Lexical Hybrid Ranking
     if search_embedding:
-        query += f" AND embedding <=> ${len(args)+1}::vector < {get_settings().cosine_distance_threshold}"
-        query += f" ORDER BY embedding <=> ${len(args)+1}::vector ASC"
-        args.append(to_vector_literal(search_embedding))
+        threshold = get_settings().cosine_distance_threshold
 
+        if text:
+            fuzzy_tau = get_settings().fuzzy_word_similarity_threshold
+            vec_i = len(args) + 1
+            args.append(to_vector_literal(search_embedding))
+            q_i = len(args) + 1
+            args.append(text)             # raw, for case-insensitive equality
+            pre_i = len(args) + 1
+            args.append(f"{text}%")       # prefix
+            sub_i = len(args) + 1
+            args.append(f"%{text}%")      # substring (subsumes prefix + exact)
+
+            # word_similarity(query, title): finds the best-matching run of
+            # trigrams in a longer title, so a short misspelled query ("methan
+            # plume") still scores against "…Methane Plume Complexes". Plain
+            # similarity() would penalize the length mismatch. Fuzzy matches on
+            # TITLE only — ids are opaque codes where trigram overlap is noise.
+            fuzzy_score = f"word_similarity(lower(${q_i}), lower(title))"
+
+            # Lexical tiers, decided in SQL so the label always agrees with the
+            # order the query applied. Exact is case-insensitive on BOTH sides
+            # (lower()=lower(), not ILIKE, so '_'/'%' in a pasted id aren't
+            # treated as wildcards). Tier order: exact(0) > prefix(1) >
+            # substring(2) > fuzzy(3) > semantic(4).
+            tier_expr = (
+                f"CASE "
+                f"WHEN lower(id) = lower(${q_i}) OR lower(title) = lower(${q_i}) THEN 0 "
+                f"WHEN id ILIKE ${pre_i} OR title ILIKE ${pre_i} THEN 1 "
+                f"WHEN id ILIKE ${sub_i} OR title ILIKE ${sub_i} THEN 2 "
+                f"WHEN {fuzzy_score} >= {fuzzy_tau} THEN 3 "
+                f"ELSE 4 END"
+            )
+            tier_select = f"{tier_expr} AS match_tier"
+
+            # Admit a row if it clears the semantic threshold OR matches lexically
+            # (substring covers exact+prefix) OR clears the fuzzy cutoff.
+            where += (
+                f" AND (embedding <=> ${vec_i}::vector < {threshold}"
+                f" OR id ILIKE ${sub_i} OR title ILIKE ${sub_i}"
+                f" OR {fuzzy_score} >= {fuzzy_tau})"
+            )
+            # tier first; then order the FUZZY tier by word_similarity DESC
+            # (cosine is near-flat and can't rank typo hits) — gated to tier 3
+            # only so it never perturbs the semantic tier's cosine order; then
+            # cosine; then id ASC as a deterministic final tiebreak.
+            order = (
+                f" ORDER BY match_tier ASC,"
+                f" (CASE WHEN ({tier_expr}) = 3 THEN {fuzzy_score} ELSE 0 END) DESC,"
+                f" embedding <=> ${vec_i}::vector ASC, id ASC"
+            )
+        else:
+            # No text: pure semantic search, deterministic tiebreak on id.
+            vec_i = len(args) + 1
+            args.append(to_vector_literal(search_embedding))
+            where += f" AND embedding <=> ${vec_i}::vector < {threshold}"
+            order = f" ORDER BY embedding <=> ${vec_i}::vector ASC, id ASC"
+
+    query = f"SELECT provider_id, id, title, {tier_select} FROM collections{where}{order}"
     query += f" LIMIT ${len(args)+1}"
     args.append(limit)
 
+    _TIER_LABELS = {0: "exact", 1: "prefix", 2: "substring", 3: "fuzzy", 4: "semantic"}
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *args)
-    return [{"provider_id": row["provider_id"], "id": row["id"]} for row in rows]
+    return [
+        {
+            "provider_id": row["provider_id"],
+            "id": row["id"],
+            "title": row["title"],
+            "match_tier": _TIER_LABELS.get(row["match_tier"], "semantic"),
+            # Literal lexical matches (exact/prefix/substring) drive the fan-out
+            # "exact" lane. Fuzzy is a softer signal, so it rides the semantic
+            # lane (still badged distinctly via match_tier).
+            "is_exact": row["match_tier"] <= 2,
+        }
+        for row in rows
+    ]

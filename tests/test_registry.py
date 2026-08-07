@@ -50,7 +50,9 @@ async def test_upsert_collection_extracts_and_executes():
 async def test_get_candidate_collections_builds_query():
     """The pre-filter query adds spatial + temporal clauses and passes params in order."""
     mock_conn = AsyncMock()
-    mock_conn.fetch.return_value = [{"provider_id": 1, "id": "test-collection"}]
+    mock_conn.fetch.return_value = [
+        {"provider_id": 1, "id": "test-collection", "title": "Test", "match_tier": 4}
+    ]
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
 
@@ -61,7 +63,15 @@ async def test_get_candidate_collections_builds_query():
         end_time="2020-12-31T23:59:59Z",
     )
 
-    assert result == [{"provider_id": 1, "id": "test-collection"}]
+    assert result == [
+        {
+            "provider_id": 1,
+            "id": "test-collection",
+            "title": "Test",
+            "match_tier": "semantic",
+            "is_exact": False,
+        }
+    ]
 
     mock_conn.fetch.assert_called_once()
     call_args = mock_conn.fetch.call_args[0]
@@ -69,6 +79,8 @@ async def test_get_candidate_collections_builds_query():
 
     assert "min_x <=" in query
     assert "start_time <=" in query
+    # No embedding/text: everything is the default semantic tier.
+    assert "4 AS match_tier" in query
 
     # Param order: [max_x, min_x, max_y, min_y, parsed_end, parsed_start, limit]
     assert call_args[1] == 30.0                                 # search max_x
@@ -77,3 +89,36 @@ async def test_get_candidate_collections_builds_query():
     assert call_args[4] == 20.0                                 # search min_y
     assert call_args[5] == parse_date("2020-12-31T23:59:59Z")   # parsed end
     assert call_args[6] == parse_date("2020-01-01T00:00:00Z")   # parsed start
+
+
+@pytest.mark.asyncio
+async def test_candidate_query_labels_tiers_with_the_expression_it_orders_by():
+    """``match_tier``/``is_exact`` come back from SQL, computed by the same tier
+    CASE that admits and orders the row — callers must not re-derive them."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = [
+        {"provider_id": 1, "id": "sentinel-2-l2a", "title": "Sentinel-2", "match_tier": 0},
+        {"provider_id": 2, "id": "landsat-8", "title": "Landsat 8", "match_tier": 4},
+    ]
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    result = await get_candidate_collections(
+        pool=mock_pool, text="sentinel", search_embedding=[0.1, 0.2, 0.3]
+    )
+
+    assert [r["match_tier"] for r in result] == ["exact", "semantic"]
+    assert [r["is_exact"] for r in result] == [True, False]  # tier <= 2
+    assert result[0]["title"] == "Sentinel-2"
+
+    query = mock_conn.fetch.call_args[0][0]
+    # No bbox/temporal: vector=$1, raw text=$2, prefix=$3, substring=$4.
+    assert "lower(id) = lower($2) OR lower(title) = lower($2) THEN 0" in query  # exact, both sides
+    assert "id ILIKE $3 OR title ILIKE $3 THEN 1" in query                      # prefix
+    assert "id ILIKE $4 OR title ILIKE $4 THEN 2" in query                      # substring
+    assert "word_similarity(lower($2), lower(title)) >= 0.6 THEN 3" in query    # fuzzy
+    assert "ORDER BY match_tier ASC" in query and "id ASC" in query             # tier + tiebreak
+    call = mock_conn.fetch.call_args[0]
+    assert call[2] == "sentinel"       # $2 raw (case-insensitive equality)
+    assert call[3] == "sentinel%"      # $3 prefix
+    assert call[4] == "%sentinel%"     # $4 substring

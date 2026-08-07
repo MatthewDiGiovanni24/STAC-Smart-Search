@@ -9,6 +9,20 @@ const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 type Phase = 'idle' | 'streaming' | 'ranked' | 'error';
 
+/**
+ * Exact matches ahead of semantic, preserving arrival order within each lane.
+ * Applied as items stream in (before `meta`) so a fast semantic catalog can't
+ * briefly sit on top; `meta`'s `ranked_ids` then refines within-lane by score.
+ * Array.prototype.sort is stable, so equal keys keep arrival order.
+ */
+function blockedArrival(items: Item[]): Item[] {
+  return [...items].sort(
+    (a, b) =>
+      Number(a.properties?.match_type !== 'exact') -
+      Number(b.properties?.match_type !== 'exact'),
+  );
+}
+
 interface Props {
   query: SearchPayload | null;
   onSettled?: () => void;
@@ -38,7 +52,8 @@ export function ResultsStream({ query, onSettled }: Props) {
         onItem: (item) => {
           if (byId.current.has(item.id)) return; // dedupe
           byId.current.set(item.id, item);
-          setItems(Array.from(byId.current.values())); // arrival order
+          // Exact-first as they arrive (no mid-stream flicker); meta refines later.
+          setItems(blockedArrival(Array.from(byId.current.values())));
         },
         onMeta: (m) => {
           setMeta(m);

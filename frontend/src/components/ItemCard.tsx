@@ -20,12 +20,26 @@ function formatDate(dt: string | null): string {
   return Number.isNaN(d.getTime()) ? dt : d.toISOString().slice(0, 10);
 }
 
+// Factual label for the lexical tier the query matched (not a score). Falls
+// back to the coarse match_type for backward compatibility.
+const TIER_BADGE: Record<string, { label: string; title: string }> = {
+  exact: { label: 'Exact match', title: 'Query equals this collection’s id or title' },
+  prefix: { label: 'Name match', title: 'This collection’s id or title starts with your query' },
+  substring: { label: 'Partial match', title: 'Your query appears within the id or title' },
+};
+
+function tierBadge(item: Item): { label: string; title: string } | null {
+  const tier = item.properties?.match_tier
+    ?? (item.properties?.match_type === 'exact' ? 'substring' : undefined);
+  return tier ? TIER_BADGE[tier] ?? null : null;
+}
+
 export function ItemCard({ item, registerRef }: Props) {
   const href = itemHref(item);
   const score = item.relevance_score;
   const pct = score != null ? Math.round(Math.max(0, Math.min(1, score)) * 100) : null;
+  const badge = tierBadge(item);
 
-  // console.log("My STAC Item:", item);
   return (
     <article
       ref={registerRef}
@@ -33,7 +47,17 @@ export function ItemCard({ item, registerRef }: Props) {
       onClick={() => href && window.open(href, '_blank', 'noopener,noreferrer')}
     >
       <div className="card__head">
-        <span className={`badge badge--${item.catalog_source}`}>{item.catalog_source}</span>
+        <div className="card__tags">
+          <span className={`badge badge--${item.catalog_source}`}>{item.catalog_source}</span>
+          {badge && (
+            <span
+              className={`badge badge--tier badge--tier-${item.properties?.match_tier ?? 'exact'}`}
+              title={badge.title}
+            >
+              {badge.label}
+            </span>
+          )}
+        </div>
         {pct != null && <span className="card__score-num">{pct}%</span>}
       </div>
 
